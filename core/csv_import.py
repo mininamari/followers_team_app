@@ -136,6 +136,38 @@ def parse_meta_period_from_filename(filename: str) -> Optional[tuple[str, str]]:
     return start, end
 
 
+def parse_pr_period_from_filename(filename: str) -> Optional[tuple[str, str]]:
+    month_map = {
+        "янв": "01",
+        "фев": "02",
+        "мар": "03",
+        "апр": "04",
+        "май": "05",
+        "мая": "05",
+        "июн": "06",
+        "июл": "07",
+        "авг": "08",
+        "сен": "09",
+        "сент": "09",
+        "окт": "10",
+        "ноя": "11",
+        "дек": "12",
+    }
+    month_pattern = "|".join(sorted(month_map, key=len, reverse=True))
+    pattern = re.compile(
+        rf"(?P<d1>\d{{1,2}})[\s_.-]*(?P<m1>{month_pattern})[\s_.-]*(?P<y1>\d{{4}})"
+        rf".*?"
+        rf"(?P<d2>\d{{1,2}})[\s_.-]*(?P<m2>{month_pattern})[\s_.-]*(?P<y2>\d{{4}})",
+        re.IGNORECASE,
+    )
+    m = pattern.search(filename)
+    if not m:
+        return None
+    start = f"{m.group('y1')}-{month_map[m.group('m1').lower()]}-{int(m.group('d1')):02d}"
+    end = f"{m.group('y2')}-{month_map[m.group('m2').lower()]}-{int(m.group('d2')):02d}"
+    return start, end
+
+
 def infer_accounts_from_meta(df: pd.DataFrame) -> list[str]:
     df, _ = normalize_meta_columns(df)
     if META_ACCOUNT_USERNAME_COL not in df.columns:
@@ -426,9 +458,23 @@ def import_pr(uploaded_file, user: dict, account: str, auto_detect_accounts: boo
     df[PR_END_COL] = df[PR_END_COL].apply(normalize_period)
     starts = sorted(df[PR_START_COL].dropna().unique())
     ends = sorted(df[PR_END_COL].dropna().unique())
-    if len(starts) != 1 or len(ends) != 1:
+    file_period = parse_pr_period_from_filename(uploaded_file.name)
+    if file_period:
+        period_start, period_end = file_period
+        column_periods = {(start, end) for start in starts for end in ends}
+        if column_periods != {file_period}:
+            warnings.append(
+                tr(
+                    f"PR period was taken from the filename ({period_start} - {period_end}); CSV columns contain {', '.join(f'{start} - {end}' for start, end in sorted(column_periods))}.",
+                    f"Период PR взят из имени файла ({period_start} - {period_end}); в колонках CSV указано {', '.join(f'{start} - {end}' for start, end in sorted(column_periods))}.",
+                )
+            )
+    elif len(starts) != 1 or len(ends) != 1:
         raise ValueError(tr("Multiple periods were found in Novakid PR. Upload a file for one period only.", "В Novakid PR найдено несколько периодов. Загрузите файл только за один период."))
-    period_start, period_end = starts[0], ends[0]
+    else:
+        period_start, period_end = starts[0], ends[0]
+    if period_start > period_end:
+        raise ValueError(tr("PR period start date is after the end date.", "Дата начала периода PR больше даты окончания."))
     month = month_from_period(period_start)
 
     df[PR_AD_NAME_COL] = df[PR_AD_NAME_COL].apply(clean_id)
