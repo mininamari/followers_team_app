@@ -27,6 +27,11 @@ Create environment variables in your local shell or Railway project. Do not comm
 | `FOLLOWERS_BACKUP_DIR` | No | Backup storage directory. Default: `backups`. Use `/backups` when your host provides that mounted directory. |
 | `FOLLOWERS_BACKUP_RETENTION` | No | Number of database backups to keep. Default: `8`. |
 | `FOLLOWERS_BACKUP_INTERVAL_DAYS` | No | Automatic backup interval. Default: `7`. |
+| `SESSION_IDLE_TIMEOUT_MINUTES` | No | Sign out an inactive browser session after this many minutes. Default: `60`. |
+| `SESSION_MAX_AGE_HOURS` | No | Require a fresh login after this many hours, even if active. Default: `12`. |
+| `LOGIN_MAX_ATTEMPTS` | No | Failed attempts allowed during the login window. Default: `5`. |
+| `LOGIN_ATTEMPT_WINDOW_MINUTES` | No | Window used to count failed login attempts. Default: `15`. |
+| `LOGIN_LOCKOUT_MINUTES` | No | Temporary login lock after too many failures. Default: `15`. |
 | `META_APP_ID` | No | Meta App ID, only needed if you later add token refresh. |
 | `META_APP_SECRET` | No | Meta App Secret, only needed if you later add token refresh. |
 | `META_ACCESS_TOKEN` | No | System User access token for the Facebook Marketing API. Without it, the "Facebook Ads" page shows a "not configured" message. |

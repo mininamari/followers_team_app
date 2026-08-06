@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from math import ceil
+
 import streamlit as st
 
-from core.auth import authenticate, has_permission
-from core.config import ROLE_LABELS
+from core.auth import LoginRateLimited, authenticate, get_user, has_permission
+from core.config import ROLE_LABELS, SESSION_IDLE_TIMEOUT_MINUTES, SESSION_MAX_AGE_HOURS, now_utc, parse_utc
 from core.db import db_df, init_db
 from core.i18n import LANGUAGE_LABELS, LANGUAGE_OPTIONS, current_language, set_language_from_label, tr
 from core.style import apply_novakid_style, hero
@@ -23,6 +26,9 @@ def login_screen() -> None:
     apply_novakid_style()
     left, mid, right = st.columns([1, 1.25, 1])
     with mid:
+        auth_notice = st.session_state.pop("auth_notice", None)
+        if auth_notice:
+            st.warning(auth_notice)
         language_label = LANGUAGE_LABELS.get(current_language(), "English")
         st.selectbox(
             tr("Language", "Язык"),
@@ -45,12 +51,26 @@ def login_screen() -> None:
             password = st.text_input(tr("Password", "Пароль"), type="password")
             submitted = st.form_submit_button(tr("Sign in", "Войти"), type="primary", use_container_width=True)
         if submitted:
-            user = authenticate(username, password)
-            if user:
-                st.session_state["user"] = {"username": user["username"], "role": user["role"]}
-                st.rerun()
-            else:
-                st.error(tr("Incorrect username or password.", "Неверный логин или пароль."))
+            try:
+                user = authenticate(username, password)
+                if user:
+                    signed_in_at = now_utc()
+                    st.session_state["user"] = {
+                        "username": user["username"],
+                        "role": user["role"],
+                        "auth_version": int(user.get("auth_version", 1)),
+                    }
+                    st.session_state["auth_started_at"] = signed_in_at
+                    st.session_state["auth_last_activity_at"] = signed_in_at
+                    st.rerun()
+                else:
+                    st.error(tr("Incorrect username or password.", "Неверный логин или пароль."))
+            except LoginRateLimited as exc:
+                minutes = max(1, ceil(exc.retry_after_seconds / 60))
+                st.error(tr(
+                    f"Too many login attempts. Try again in {minutes} min.",
+                    f"Слишком много попыток входа. Попробуйте снова через {minutes} мин.",
+                ))
         if db_df("SELECT COUNT(*) AS user_count FROM users")["user_count"].iloc[0] == 0:
             st.warning(tr(
                 "No users have been created yet. The first admin is configured through environment variables.",
@@ -58,11 +78,40 @@ def login_screen() -> None:
             ))
 
 
+def _end_session(message: str) -> None:
+    for key in ("user", "auth_started_at", "auth_last_activity_at"):
+        st.session_state.pop(key, None)
+    st.session_state["auth_notice"] = message
+    st.rerun()
+
+
 def require_login() -> dict:
     if "user" not in st.session_state:
         login_screen()
         st.stop()
-    return st.session_state["user"]
+
+    session_user = st.session_state["user"]
+    started_at = parse_utc(st.session_state.get("auth_started_at"))
+    last_activity_at = parse_utc(st.session_state.get("auth_last_activity_at"))
+    now = datetime.utcnow()
+    expired_message = tr("Your session has expired. Sign in again.", "Сессия завершена. Войдите снова.")
+    if (
+        not started_at
+        or not last_activity_at
+        or now - started_at >= timedelta(hours=SESSION_MAX_AGE_HOURS)
+        or now - last_activity_at >= timedelta(minutes=SESSION_IDLE_TIMEOUT_MINUTES)
+    ):
+        _end_session(expired_message)
+
+    current_user = get_user(session_user.get("username", ""))
+    if not current_user or not current_user["is_active"]:
+        _end_session(tr("Your access has been disabled. Contact an administrator.", "Ваш доступ отключён. Обратитесь к администратору."))
+    if int(current_user.get("auth_version", 1)) != int(session_user.get("auth_version", 0)):
+        _end_session(tr("Your account security settings changed. Sign in again.", "Настройки безопасности аккаунта изменились. Войдите снова."))
+
+    session_user["role"] = current_user["role"]
+    st.session_state["auth_last_activity_at"] = now_utc()
+    return session_user
 
 
 def sidebar(user: dict) -> str:
@@ -108,7 +157,8 @@ def sidebar(user: dict) -> str:
         )
         st.divider()
         if st.button(tr("Log out", "Выйти"), use_container_width=True):
-            st.session_state.pop("user", None)
+            for key in ("user", "auth_started_at", "auth_last_activity_at"):
+                st.session_state.pop(key, None)
             st.rerun()
     return page
 

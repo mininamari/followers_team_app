@@ -19,7 +19,11 @@ def page_profile(user: dict) -> None:
         current = get_user(user["username"])
         if current and verify_password(old, current["password_hash"]) and len(new) >= 8:
             with connect_db() as conn:
-                conn.execute("UPDATE users SET password_hash=? WHERE username=?", (hash_password(new), user["username"]))
+                conn.execute(
+                    "UPDATE users SET password_hash=?, auth_version=auth_version+1 WHERE username=?",
+                    (hash_password(new), user["username"]),
+                )
+                conn.execute("DELETE FROM login_attempts WHERE username=?", (user["username"],))
                 conn.commit()
             st.success(tr("Password updated.", "Пароль обновлен."))
         else:
