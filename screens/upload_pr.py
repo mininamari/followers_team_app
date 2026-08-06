@@ -50,8 +50,8 @@ def page_upload_pr(user: dict) -> None:
         ))
     else:
         st.caption(tr(
-            "Matching imported rows will receive values from the new file; missing old rows will not be deleted. Manual corrections remain in effect.",
-            "Совпавшие импортированные строки получат значения из нового файла; старые строки, которых нет в файле, не удаляются. Ручные корректировки продолжат действовать.",
+            "Imported rows for the mapped accounts and period will be replaced by this file. Manual corrections remain in effect.",
+            "Импортированные строки выбранных аккаунтов и периода будут заменены данными этого файла. Ручные корректировки продолжат действовать.",
         ))
     pr_file = st.file_uploader(tr("Novakid PR CSV / Excel", "CSV / Excel из Novakid PR"), type=["csv", "xlsx"], key="pr")
     page_mapping: dict[str, str] = {}

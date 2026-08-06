@@ -44,6 +44,8 @@ def page_dashboard() -> None:
     if f.empty:
         st.info(tr("Choose at least one region and period.", "Выберите хотя бы один регион и период."))
         return
+    f = f.copy()
+    f["month"] = f["month"].astype(str).str[:7]
 
     organic = int(f["organic_followers"].sum())
     total = int(f["total_followers"].sum())

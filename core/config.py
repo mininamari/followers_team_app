@@ -75,6 +75,12 @@ PR_COLUMN_ALIASES = {
     ],
 }
 
+# Historical import aliases that must resolve to the real Instagram usernames.
+ACCOUNT_ALIASES = {
+    "novakid_italia": "novakiditalia",
+    "novakid_spain": "novakidespana",
+}
+
 REQUIRED_META = [META_ID_COL, META_FOLLOWERS_COL, META_LINK_COL, META_ACCOUNT_USERNAME_COL, META_PUBLISHED_AT_COL]
 REQUIRED_PR = [PR_START_COL, PR_END_COL, PR_AD_NAME_COL, PR_FOLLOWERS_COL, PR_SPEND_COL]
 MONTH_NAMES = {

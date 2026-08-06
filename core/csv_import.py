@@ -9,6 +9,7 @@ import pandas as pd
 
 from core.auth import require_permission
 from core.config import (
+    ACCOUNT_ALIASES,
     UPLOAD_DIR,
     META_ID_COL,
     META_FOLLOWERS_COL,
@@ -205,8 +206,8 @@ def read_csv_any(uploaded_file) -> pd.DataFrame:
 PR_PAGE_ACCOUNT_SUGGESTIONS = {
     "novakid türkiye": "novakidturkiye",
     "novakid school": "novakidschool",
-    "novakid italia": "novakid_italia",
-    "novakid españa": "novakid_spain",
+    "novakid italia": "novakiditalia",
+    "novakid españa": "novakidespana",
     "novakid deutschland": "novakid_de",
     "novakid mena": "novakid_mena",
     "novakid polska": "novakidpolska",
@@ -566,7 +567,11 @@ def import_pr(
     add_only: bool = False,
 ) -> tuple[int, list[str]]:
     require_permission(user, "upload_pr")
-    page_account_map = {str(k).strip(): str(v).strip() for k, v in (page_account_map or {}).items() if str(v).strip()}
+    page_account_map = {
+        str(k).strip(): ACCOUNT_ALIASES.get(str(v).strip(), str(v).strip())
+        for k, v in (page_account_map or {}).items()
+        if str(v).strip()
+    }
     if not auto_detect_accounts and not page_account_map and not account.strip():
         raise ValueError(tr("Choose an account for the PR file, for example novakid_israel.", "Для PR-файла нужно выбрать аккаунт, например novakid_israel."))
     account = account.strip()
@@ -700,6 +705,12 @@ def import_pr(
             ))
 
     with connect_db() as conn:
+        if not add_only:
+            for affected_account in sorted({str(row[0]) for row in rows_to_save}):
+                conn.execute(
+                    "DELETE FROM pr_ads WHERE account=? AND period_start=? AND period_end=?",
+                    (affected_account, period_start, period_end),
+                )
         conn.executemany(
             """
             INSERT INTO pr_ads(
