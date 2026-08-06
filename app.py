@@ -9,7 +9,7 @@ from core.auth import LoginRateLimited, authenticate, get_user, has_permission
 from core.config import ROLE_LABELS, SESSION_IDLE_TIMEOUT_MINUTES, SESSION_MAX_AGE_HOURS, now_utc, parse_utc
 from core.db import db_df, init_db
 from core.i18n import LANGUAGE_LABELS, LANGUAGE_OPTIONS, current_language, set_language_from_label, tr
-from core.style import apply_novakid_style, hero
+from core.style import apply_novakid_style, brand_lockup, hero
 from screens.backups import page_backups
 from screens.dashboard import page_dashboard
 from screens.facebook_ads import page_facebook_ads
@@ -22,7 +22,7 @@ from screens.users import page_users
 
 
 def login_screen() -> None:
-    st.set_page_config(page_title="Novakid Social Reports", layout="wide", page_icon="⭐")
+    st.set_page_config(page_title="MARK/01 — Social Growth System", layout="wide", page_icon="✳️")
     apply_novakid_style()
     left, mid, right = st.columns([1, 1.25, 1])
     with mid:
@@ -38,7 +38,7 @@ def login_screen() -> None:
             key="login_language",
         )
         hero(
-            "Novakid Social Reports",
+            "MARK/01",
             tr(
                 "Sign in to upload Meta and PR CSV files and monitor total, paid, and organic followers by region.",
                 "Войдите, чтобы загружать Meta и PR CSV и следить за total, paid и organic подписчиками по регионам.",
@@ -116,8 +116,7 @@ def require_login() -> dict:
 
 def sidebar(user: dict) -> str:
     with st.sidebar:
-        st.markdown("# ⭐ Novakid")
-        st.caption("Social Reports")
+        brand_lockup()
         language_label = LANGUAGE_LABELS.get(current_language(), "English")
         st.selectbox(
             tr("Language", "Язык"),
@@ -166,7 +165,7 @@ def sidebar(user: dict) -> str:
 def main() -> None:
     init_db()
     user = require_login()
-    st.set_page_config(page_title="Novakid Social Reports", layout="wide", page_icon="⭐")
+    st.set_page_config(page_title="MARK/01 — Social Growth System", layout="wide", page_icon="✳️")
     apply_novakid_style()
     page = sidebar(user)
     if page == "Dashboard":

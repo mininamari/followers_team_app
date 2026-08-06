@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-APP_TITLE = "Instagram followers calculator"
+APP_TITLE = "MARK/01 — Social Growth System"
 DB_PATH = Path(os.getenv("FOLLOWERS_DB_PATH", "data/followers_team.db"))
 UPLOAD_DIR = Path(os.getenv("FOLLOWERS_UPLOAD_DIR", "data/uploads"))
 BACKUP_DIR = Path(os.getenv("FOLLOWERS_BACKUP_DIR", "backups"))

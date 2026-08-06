@@ -1,4 +1,4 @@
-# Novakid Social Reports
+# MARK/01 — Social Growth System
 
 Streamlit application for calculating Instagram followers from Meta Business Suite and Novakid PR CSV exports.
 
