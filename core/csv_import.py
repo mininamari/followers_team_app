@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import re
-import sqlite3
 from datetime import datetime, date
 from typing import Optional
 
@@ -10,7 +9,6 @@ import pandas as pd
 
 from core.auth import require_permission
 from core.config import (
-    DB_PATH,
     UPLOAD_DIR,
     META_ID_COL,
     META_FOLLOWERS_COL,
@@ -31,6 +29,7 @@ from core.config import (
     now_utc,
 )
 from core.i18n import tr
+from core.database import connect_db
 
 
 # -------------------- generic helpers --------------------
@@ -235,8 +234,7 @@ def latest_publications_df(df: pd.DataFrame) -> pd.DataFrame:
 # -------------------- Recalculation --------------------
 
 def recalc_final(account: str, period_start: str, period_end: str) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
+    with connect_db() as conn:
         meta_rows = conn.execute(
             "SELECT * FROM meta_publications WHERE account=? AND period_start=? AND period_end=?",
             (account, period_start, period_end),
@@ -292,8 +290,7 @@ def recalc_final(account: str, period_start: str, period_end: str) -> None:
 
 def recalc_monthly_totals(account: str, period_start: str, period_end: str) -> None:
     """Persist the complete regional month, including paid rows not matched to Meta posts."""
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
+    with connect_db() as conn:
         imported_total = int(conn.execute(
             "SELECT COALESCE(SUM(meta_followers), 0) FROM meta_publications WHERE account=? AND period_start=? AND period_end=?",
             (account, period_start, period_end),
@@ -348,7 +345,7 @@ def save_monthly_follower_totals(rows: pd.DataFrame, user: dict) -> int:
     require_permission(user, "edit_reports")
     updated_at = now_utc()
     affected: list[tuple[str, str, str]] = []
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_db() as conn:
         for _, row in rows.iterrows():
             manual_total = None if pd.isna(row["manual_total_followers"]) else int(row["manual_total_followers"])
             manual_paid = None if pd.isna(row["manual_paid_followers"]) else int(row["manual_paid_followers"])
@@ -376,7 +373,7 @@ def save_follower_overrides(rows: pd.DataFrame, user: dict) -> int:
 
     affected_periods: set[tuple[str, str, str]] = set()
     updated_at = now_utc()
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_db() as conn:
         for _, row in selected.iterrows():
             key = (str(row["account"]), str(row["period_start"]), str(row["period_end"]), str(row["publication_id"]))
             value = row["manual_pr_followers"]
@@ -487,7 +484,7 @@ def import_meta(uploaded_file, user: dict, manual_start: Optional[date], manual_
             user["username"], uploaded_at,
         ))
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_db() as conn:
         conn.executemany(
             """
             INSERT INTO meta_publications(
@@ -571,16 +568,19 @@ def import_pr(uploaded_file, user: dict, account: str, auto_detect_accounts: boo
     if auto_detect_accounts:
         ids = grouped["publication_id"].dropna().astype(str).tolist()
         placeholders = ",".join(["?"] * len(ids))
-        with sqlite3.connect(DB_PATH) as conn:
-            meta_matches = pd.read_sql_query(
+        with connect_db() as conn:
+            cursor = conn.execute(
                 f"""
                 SELECT publication_id, account
                 FROM meta_publications
                 WHERE period_start=? AND period_end=? AND publication_id IN ({placeholders})
                 GROUP BY publication_id, account
                 """,
-                conn,
-                params=(period_start, period_end, *ids),
+                (period_start, period_end, *ids),
+            )
+            meta_matches = pd.DataFrame(
+                [(row[0], row[1]) for row in cursor.fetchall()],
+                columns=["publication_id", "account"],
             )
 
         if meta_matches.empty:
@@ -616,7 +616,7 @@ def import_pr(uploaded_file, user: dict, account: str, auto_detect_accounts: boo
             float(r[PR_SPEND_COL]), uploaded_file.name, user["username"], uploaded_at,
         ))
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_db() as conn:
         conn.executemany(
             """
             INSERT INTO pr_ads(

@@ -6,6 +6,7 @@ import streamlit as st
 from core.auth import has_permission
 from core.config import BACKUP_DIR, BACKUP_RETENTION
 from core.db import create_manual_backup, get_setting, list_backups
+from core.database import IS_POSTGRES
 from core.i18n import tr
 from core.style import hero
 
@@ -13,6 +14,21 @@ from core.style import hero
 def page_backups(user: dict) -> None:
     if not has_permission(user, "manage_backups"):
         st.error(tr("You do not have permission to manage backups.", "У вас нет прав для управления резервными копиями."))
+        return
+
+    if IS_POSTGRES:
+        hero(
+            "Database protection",
+            tr(
+                "The app is using PostgreSQL. Backups and point-in-time recovery are managed in Railway.",
+                "Приложение использует PostgreSQL. Резервные копии и восстановление на момент времени управляются в Railway.",
+            ),
+            ["PostgreSQL", "Railway backups", "PITR"],
+        )
+        st.info(tr(
+            "Open the PostgreSQL service in Railway and verify that Backups/PITR is enabled for your plan.",
+            "Откройте сервис PostgreSQL в Railway и проверьте, что Backups/PITR включён на вашем тарифе.",
+        ))
         return
 
     hero(

@@ -22,6 +22,7 @@ Create environment variables in your local shell or Railway project. Do not comm
 | `FOLLOWERS_ADMIN_USERNAME` | First setup only | Username for the first admin user when the database has no users. |
 | `FOLLOWERS_ADMIN_PASSWORD` | First setup only | Password for the first admin user. Must be at least 8 characters. |
 | `FOLLOWERS_DB_PATH` | No | SQLite database path. Default: `data/followers_team.db`. |
+| `DATABASE_URL` | Recommended on Railway | PostgreSQL connection URL. When set, PostgreSQL is used instead of SQLite. Keep it in Railway variables only. |
 | `FOLLOWERS_UPLOAD_DIR` | No | Uploaded CSV storage directory. Default: `data/uploads`. |
 | `FOLLOWERS_BACKUP_DIR` | No | Backup storage directory. Default: `backups`. Use `/backups` when your host provides that mounted directory. |
 | `FOLLOWERS_BACKUP_RETENTION` | No | Number of database backups to keep. Default: `8`. |
@@ -103,6 +104,18 @@ streamlit run app.py --server.port $PORT --server.address 0.0.0.0
 
 5. After the first admin user exists, rotate or remove first-setup environment variables according to your team's secret management policy.
 
+### Migrating SQLite to Railway PostgreSQL
+
+Create a PostgreSQL service first, but do not switch the application until the migration succeeds. Run the one-time migration against a recent SQLite backup from a secure environment:
+
+```bash
+SOURCE_SQLITE_PATH=/path/to/followers_backup.db \
+DATABASE_URL='postgresql://...' \
+python3 scripts/migrate_sqlite_to_postgres.py
+```
+
+The script refuses to write to a non-empty PostgreSQL database and verifies row counts table by table. After it succeeds, add Railway's PostgreSQL `DATABASE_URL` reference to the application service and redeploy. Retain the SQLite backup until the new deployment has been verified.
+
 ## Security Notes
 
 - No default credentials are hardcoded in the application.
@@ -110,4 +123,3 @@ streamlit run app.py --server.port $PORT --server.address 0.0.0.0
 - Passwords are stored as PBKDF2-SHA256 hashes with per-password salts.
 - Secrets must be provided through environment variables.
 - SQLite databases, backups, uploads, local env files, caches, and temporary files are ignored by Git.
-

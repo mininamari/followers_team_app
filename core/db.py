@@ -25,18 +25,20 @@ from core.config import (
     parse_utc,
 )
 from core.csv_import import clean_id, is_novakid_account, normalize_meta_columns, read_csv_any, to_number
+from core.database import IS_POSTGRES, connect_db
 
 
 def init_db() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not IS_POSTGRES:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
+    with connect_db() as conn:
+        id_column = "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {id_column},
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('admin','manager','viewer')),
@@ -45,11 +47,12 @@ def init_db() -> None:
             )
             """
         )
-        migrate_user_roles(conn)
+        if not IS_POSTGRES:
+            migrate_user_roles(conn)
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS uploads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {id_column},
                 file_type TEXT NOT NULL CHECK(file_type IN ('meta','pr')),
                 account TEXT,
                 period_start TEXT,
@@ -233,9 +236,9 @@ def init_db() -> None:
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS fb_sync_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {id_column},
                 account_id TEXT,
                 started_at TEXT NOT NULL,
                 finished_at TEXT,
@@ -286,7 +289,7 @@ def backfill_monthly_follower_totals(conn: sqlite3.Connection) -> None:
             (account, period_start, period_end, account, period_start, period_end),
         ).fetchone()[0]
         conn.execute(
-            """
+            f"""
             INSERT INTO monthly_follower_totals(
                 account, period_start, period_end, month,
                 imported_total_followers, imported_paid_followers,
@@ -297,7 +300,7 @@ def backfill_monthly_follower_totals(conn: sqlite3.Connection) -> None:
                 imported_paid_followers=excluded.imported_paid_followers,
                 total_followers=COALESCE(monthly_follower_totals.manual_total_followers, excluded.imported_total_followers),
                 paid_followers=COALESCE(monthly_follower_totals.manual_paid_followers, excluded.imported_paid_followers),
-                organic_followers=MAX(0,
+                organic_followers={"GREATEST" if IS_POSTGRES else "MAX"}(0,
                     COALESCE(monthly_follower_totals.manual_total_followers, excluded.imported_total_followers) -
                     COALESCE(monthly_follower_totals.manual_paid_followers, excluded.imported_paid_followers)
                 )
@@ -365,14 +368,23 @@ def migrate_user_roles(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def ensure_schema_columns(conn: sqlite3.Connection) -> None:
+def _table_columns(conn, table: str) -> set[str]:
+    if IS_POSTGRES:
+        return {row[0] for row in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=?",
+            (table,),
+        )}
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def ensure_schema_columns(conn) -> None:
     for table in ("meta_publications", "final_results"):
-        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        cols = _table_columns(conn, table)
         if "publication_date" not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN publication_date TEXT")
         if "post_reach" not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN post_reach INTEGER NOT NULL DEFAULT 0")
-    final_cols = {row[1] for row in conn.execute("PRAGMA table_info(final_results)")}
+    final_cols = _table_columns(conn, "final_results")
     additions = {
         "imported_pr_followers": "INTEGER NOT NULL DEFAULT 0",
         "manual_pr_followers": "INTEGER",
@@ -385,7 +397,7 @@ def ensure_schema_columns(conn: sqlite3.Connection) -> None:
             if column == "imported_pr_followers":
                 conn.execute("UPDATE final_results SET imported_pr_followers=pr_followers")
 
-    creative_cols = {row[1] for row in conn.execute("PRAGMA table_info(fb_creatives)")}
+    creative_cols = _table_columns(conn, "fb_creatives")
     if "tags" not in creative_cols:
         conn.execute("ALTER TABLE fb_creatives ADD COLUMN tags TEXT")
     conn.commit()
@@ -489,13 +501,13 @@ def backfill_stored_meta_reach(conn: sqlite3.Connection) -> None:
 
 
 def get_setting(key: str) -> Optional[str]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_db() as conn:
         row = conn.execute("SELECT value FROM system_settings WHERE key=?", (key,)).fetchone()
         return row[0] if row else None
 
 
 def set_setting(key: str, value: str) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_db() as conn:
         conn.execute(
             """
             INSERT INTO system_settings(key, value) VALUES(?, ?)
@@ -507,8 +519,10 @@ def set_setting(key: str, value: str) -> None:
 
 
 def db_df(query: str, params: Iterable = ()) -> pd.DataFrame:
-    with sqlite3.connect(DB_PATH) as conn:
-        return pd.read_sql_query(query, conn, params=tuple(params))
+    with connect_db() as conn:
+        cursor = conn.execute(query, tuple(params))
+        columns = [item[0] if isinstance(item, tuple) else item.name for item in cursor.description]
+        return pd.DataFrame([tuple(row[index] for index in range(len(columns))) for row in cursor.fetchall()], columns=columns)
 
 
 def accounts_in_db() -> list[str]:
@@ -552,6 +566,8 @@ def prune_old_backups() -> None:
 
 
 def create_backup(created_by: str = "system") -> Path:
+    if IS_POSTGRES:
+        raise RuntimeError("PostgreSQL backups are managed by Railway. Use Railway Backups/PITR.")
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     target = BACKUP_DIR / f"followers_team_{timestamp}.db"
@@ -572,6 +588,8 @@ def create_manual_backup(user: dict) -> Path:
 
 
 def maybe_create_weekly_backup() -> None:
+    if IS_POSTGRES:
+        return
     last_backup_at = parse_utc(get_setting("last_weekly_backup_at"))
     if last_backup_at and datetime.utcnow() - last_backup_at < timedelta(days=BACKUP_INTERVAL_DAYS):
         return

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 
 import pandas as pd
 import streamlit as st
 
 from core.auth import has_permission
-from core.config import DB_PATH, now_utc
+from core.config import now_utc
+from core.database import connect_db
 from core.db import db_df
 from core.i18n import tr
 from core.style import hero
@@ -19,7 +19,7 @@ MIN_ROWS_FOR_PERFORMANCE_FLAG = 4
 
 
 def _save_account_mapping(account_id: str, label: str, novakid_account: str, is_active: bool) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_db() as conn:
         conn.execute(
             """
             INSERT INTO fb_ad_accounts(account_id, label, novakid_account, is_active, created_at)
@@ -35,7 +35,7 @@ def _save_account_mapping(account_id: str, label: str, novakid_account: str, is_
 
 
 def _save_creative_tags(df: pd.DataFrame) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_db() as conn:
         for _, row in df.iterrows():
             conn.execute(
                 "UPDATE fb_creatives SET tags=? WHERE creative_id=?",

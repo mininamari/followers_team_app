@@ -4,10 +4,10 @@ import base64
 import hashlib
 import hmac
 import secrets
-import sqlite3
 from typing import Optional
 
-from core.config import DB_PATH, PERMISSIONS
+from core.config import PERMISSIONS
+from core.database import connect_db
 from core.i18n import tr
 
 
@@ -42,8 +42,7 @@ def require_permission(user: Optional[dict], permission: str) -> None:
 
 
 def get_user(username: str) -> Optional[dict]:
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
+    with connect_db() as conn:
         row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
         return dict(row) if row else None
 

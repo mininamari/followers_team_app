@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
 
 import streamlit as st
 
 from core.auth import get_user, has_permission, hash_password
-from core.config import DB_PATH, ROLE_LABELS, ROLE_VIEWER, ROLES, now_utc
+from core.config import ROLE_LABELS, ROLE_VIEWER, ROLES, now_utc
+from core.database import INTEGRITY_ERRORS, connect_db
 from core.db import db_df
 from core.i18n import tr
 from core.style import hero
@@ -35,7 +35,7 @@ def page_users(user: dict) -> None:
                 st.error(tr("Select a valid role.", "Выберите корректную роль."))
             else:
                 try:
-                    with sqlite3.connect(DB_PATH) as conn:
+                    with connect_db() as conn:
                         conn.execute(
                             "INSERT INTO users(username,password_hash,role,is_active,created_at) VALUES(?,?,?,?,?)",
                             (username.strip(), hash_password(password), role, 1, now_utc()),
@@ -43,7 +43,7 @@ def page_users(user: dict) -> None:
                         conn.commit()
                     st.success(tr("User created.", "Пользователь создан."))
                     st.rerun()
-                except sqlite3.IntegrityError:
+                except INTEGRITY_ERRORS:
                     st.error(tr("This user already exists.", "Такой пользователь уже есть."))
     with c2:
         st.subheader(tr("Edit User", "Редактировать пользователя"))
@@ -65,7 +65,7 @@ def page_users(user: dict) -> None:
             if target == user["username"] and (role != user["role"] or not is_active):
                 st.error(tr("You cannot change your own role or deactivate your own account.", "Нельзя изменить собственную роль или отключить собственную учетную запись."))
             else:
-                with sqlite3.connect(DB_PATH) as conn:
+                with connect_db() as conn:
                     conn.execute("UPDATE users SET role=?, is_active=? WHERE username=?", (role, int(is_active), target))
                     conn.commit()
                 st.success(tr("User updated.", "Пользователь обновлен."))
@@ -81,7 +81,7 @@ def page_users(user: dict) -> None:
             if len(new_pass) < 8:
                 st.error(tr("Password must be at least 8 characters.", "Пароль должен быть минимум 8 символов."))
             else:
-                with sqlite3.connect(DB_PATH) as conn:
+                with connect_db() as conn:
                     conn.execute("UPDATE users SET password_hash=? WHERE username=?", (hash_password(new_pass), target))
                     conn.commit()
                 st.success(tr("Password updated.", "Пароль обновлен."))
@@ -96,7 +96,7 @@ def page_users(user: dict) -> None:
             elif not confirm:
                 st.error(tr("Confirm deletion.", "Подтвердите удаление."))
             else:
-                with sqlite3.connect(DB_PATH) as conn:
+                with connect_db() as conn:
                     conn.execute("DELETE FROM users WHERE username=?", (target,))
                     conn.commit()
                 st.success(tr("User deleted.", "Пользователь удален."))
