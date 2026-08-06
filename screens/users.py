@@ -82,7 +82,11 @@ def page_users(user: dict) -> None:
                 st.error(tr("Password must be at least 8 characters.", "Пароль должен быть минимум 8 символов."))
             else:
                 with connect_db() as conn:
-                    conn.execute("UPDATE users SET password_hash=? WHERE username=?", (hash_password(new_pass), target))
+                    conn.execute(
+                        "UPDATE users SET password_hash=?, auth_version=auth_version+1 WHERE username=?",
+                        (hash_password(new_pass), target),
+                    )
+                    conn.execute("DELETE FROM login_attempts WHERE username=?", (target,))
                     conn.commit()
                 st.success(tr("Password updated.", "Пароль обновлен."))
 
@@ -97,6 +101,7 @@ def page_users(user: dict) -> None:
                 st.error(tr("Confirm deletion.", "Подтвердите удаление."))
             else:
                 with connect_db() as conn:
+                    conn.execute("DELETE FROM login_attempts WHERE username=?", (target,))
                     conn.execute("DELETE FROM users WHERE username=?", (target,))
                     conn.commit()
                 st.success(tr("User deleted.", "Пользователь удален."))

@@ -5,12 +5,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-APP_TITLE = "Instagram followers calculator"
+APP_TITLE = "MARK/01 — Social Growth System"
 DB_PATH = Path(os.getenv("FOLLOWERS_DB_PATH", "data/followers_team.db"))
 UPLOAD_DIR = Path(os.getenv("FOLLOWERS_UPLOAD_DIR", "data/uploads"))
 BACKUP_DIR = Path(os.getenv("FOLLOWERS_BACKUP_DIR", "backups"))
 BACKUP_RETENTION = int(os.getenv("FOLLOWERS_BACKUP_RETENTION", "8"))
 BACKUP_INTERVAL_DAYS = int(os.getenv("FOLLOWERS_BACKUP_INTERVAL_DAYS", "7"))
+SESSION_IDLE_TIMEOUT_MINUTES = max(1, int(os.getenv("SESSION_IDLE_TIMEOUT_MINUTES", "60")))
+SESSION_MAX_AGE_HOURS = max(1, int(os.getenv("SESSION_MAX_AGE_HOURS", "12")))
+LOGIN_MAX_ATTEMPTS = max(1, int(os.getenv("LOGIN_MAX_ATTEMPTS", "5")))
+LOGIN_ATTEMPT_WINDOW_MINUTES = max(1, int(os.getenv("LOGIN_ATTEMPT_WINDOW_MINUTES", "15")))
+LOGIN_LOCKOUT_MINUTES = max(1, int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15")))
 
 ROLE_ADMIN = "admin"
 ROLE_MANAGER = "manager"

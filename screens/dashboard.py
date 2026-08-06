@@ -6,14 +6,16 @@ import streamlit as st
 from core.auth import has_permission
 from core.db import db_df
 from core.i18n import tr
-from core.style import hero
+from core.style import MARK_COLORS, hero
 from screens._shared import apply_date_filter, shared_results_filters
 
 
 def _chart_layout(fig, y_title: str) -> None:
     fig.update_layout(
-        template="plotly_white", title_font_size=20, legend_title_text=tr("Region", "Регион"),
+        template="plotly_white", title_font_size=18, title_font_family="Unbounded",
+        font_family="Onest", font_color="#171715", legend_title_text=tr("Region", "Регион"),
         xaxis_title="", yaxis_title=y_title, bargap=0.25,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     )
 
 
@@ -79,7 +81,7 @@ def page_dashboard() -> None:
                     "organic_followers": "Followers organic",
                     "account": tr("Region", "Регион"),
                 },
-                color_discrete_sequence=px.colors.qualitative.Bold,
+                color_discrete_sequence=MARK_COLORS,
             )
             _chart_layout(fig, "Followers organic")
             st.plotly_chart(fig, use_container_width=True)

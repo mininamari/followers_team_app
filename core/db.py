@@ -43,7 +43,18 @@ def init_db() -> None:
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('admin','manager','viewer')),
                 is_active INTEGER NOT NULL DEFAULT 1,
+                auth_version INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                username TEXT PRIMARY KEY,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                window_started_at TEXT NOT NULL,
+                locked_until TEXT
             )
             """
         )
@@ -378,6 +389,10 @@ def _table_columns(conn, table: str) -> set[str]:
 
 
 def ensure_schema_columns(conn) -> None:
+    user_cols = _table_columns(conn, "users")
+    if "auth_version" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1")
+
     for table in ("meta_publications", "final_results"):
         cols = _table_columns(conn, table)
         if "publication_date" not in cols:
