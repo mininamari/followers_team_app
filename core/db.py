@@ -141,6 +141,26 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS monthly_follower_totals (
+                account TEXT NOT NULL,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                month TEXT NOT NULL,
+                imported_total_followers INTEGER NOT NULL DEFAULT 0,
+                imported_paid_followers INTEGER NOT NULL DEFAULT 0,
+                manual_total_followers INTEGER,
+                manual_paid_followers INTEGER,
+                total_followers INTEGER NOT NULL DEFAULT 0,
+                paid_followers INTEGER NOT NULL DEFAULT 0,
+                organic_followers INTEGER NOT NULL DEFAULT 0,
+                updated_by TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(account, period_start, period_end)
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS system_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -226,11 +246,65 @@ def init_db() -> None:
         )
         conn.commit()
         ensure_schema_columns(conn)
+        backfill_monthly_follower_totals(conn)
         purge_non_novakid_data(conn)
         sanitize_stored_meta_uploads(conn)
         backfill_stored_meta_reach(conn)
         ensure_default_admin(conn)
     maybe_create_weekly_backup()
+
+
+def backfill_monthly_follower_totals(conn: sqlite3.Connection) -> None:
+    """Create monthly snapshots for existing databases without overwriting manual values."""
+    periods = conn.execute(
+        """
+        SELECT account, period_start, period_end FROM meta_publications
+        UNION
+        SELECT account, period_start, period_end FROM pr_ads
+        """
+    ).fetchall()
+    current = now_utc()
+    for account, period_start, period_end in periods:
+        total = conn.execute(
+            "SELECT COALESCE(SUM(meta_followers), 0) FROM meta_publications WHERE account=? AND period_start=? AND period_end=?",
+            (account, period_start, period_end),
+        ).fetchone()[0]
+        paid = conn.execute(
+            """
+            SELECT COALESCE(SUM(paid), 0) FROM (
+                SELECT COALESCE(o.manual_pr_followers, p.pr_followers) AS paid
+                FROM pr_ads p
+                LEFT JOIN follower_overrides o USING(account, period_start, period_end, publication_id)
+                WHERE p.account=? AND p.period_start=? AND p.period_end=?
+                UNION ALL
+                SELECT o.manual_pr_followers AS paid
+                FROM follower_overrides o
+                LEFT JOIN pr_ads p USING(account, period_start, period_end, publication_id)
+                WHERE o.account=? AND o.period_start=? AND o.period_end=? AND p.publication_id IS NULL
+            )
+            """,
+            (account, period_start, period_end, account, period_start, period_end),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO monthly_follower_totals(
+                account, period_start, period_end, month,
+                imported_total_followers, imported_paid_followers,
+                total_followers, paid_followers, organic_followers, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(account, period_start, period_end) DO UPDATE SET
+                imported_total_followers=excluded.imported_total_followers,
+                imported_paid_followers=excluded.imported_paid_followers,
+                total_followers=COALESCE(monthly_follower_totals.manual_total_followers, excluded.imported_total_followers),
+                paid_followers=COALESCE(monthly_follower_totals.manual_paid_followers, excluded.imported_paid_followers),
+                organic_followers=MAX(0,
+                    COALESCE(monthly_follower_totals.manual_total_followers, excluded.imported_total_followers) -
+                    COALESCE(monthly_follower_totals.manual_paid_followers, excluded.imported_paid_followers)
+                )
+            """,
+            (account, period_start, period_end, period_start[:7], int(total), int(paid), int(total), int(paid), max(0, int(total) - int(paid)), current),
+        )
+    conn.commit()
 
 
 def ensure_default_admin(conn: sqlite3.Connection) -> None:
@@ -318,7 +392,7 @@ def ensure_schema_columns(conn: sqlite3.Connection) -> None:
 
 
 def purge_non_novakid_data(conn: sqlite3.Connection) -> None:
-    for table in ("follower_overrides", "final_results", "pr_ads", "meta_publications"):
+    for table in ("monthly_follower_totals", "follower_overrides", "final_results", "pr_ads", "meta_publications"):
         conn.execute(
             f"DELETE FROM {table} WHERE lower(ltrim(account, '@')) NOT LIKE 'novakid%'"
         )

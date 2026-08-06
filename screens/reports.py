@@ -3,7 +3,8 @@ from __future__ import annotations
 import streamlit as st
 
 from core.auth import has_permission
-from core.csv_import import dataframe_to_excel_bytes, save_follower_overrides
+from core.csv_import import dataframe_to_excel_bytes, save_follower_overrides, save_monthly_follower_totals
+from core.db import db_df
 from core.i18n import tr
 from core.style import hero
 from screens._shared import filtered_results_ui
@@ -16,15 +17,44 @@ def page_report(user: dict) -> None:
     hero(
         "Reports",
         tr(
-            "Final table after matching Meta and PR. You can manually refine ad account follower counts for selected rows.",
-            "Финальная таблица после матчинга Meta + PR. Для выбранных строк можно вручную уточнить подписчиков из рекламного кабинета.",
+            "Follower report with monthly totals and post-level Meta/PR matching. Monthly corrections feed the Dashboard.",
+            "Отчёт по подписчикам с месячными итогами и матчинга Meta + PR на уровне постов. Месячные корректировки попадают в Dashboard.",
         ),
-        ["Meta followers - PR followers", "Manual PR override", "Export CSV / Excel"],
+        ["Followers total − followers paid", "Monthly manual correction", "Export CSV / Excel"],
     )
     f = filtered_results_ui()
     if f.empty:
         st.info(tr("No final data yet, or the filters returned nothing.", "Пока нет финальных данных или фильтры ничего не нашли."))
         return
+
+    monthly = db_df("SELECT * FROM monthly_follower_totals ORDER BY period_start DESC, account")
+    monthly = monthly[monthly["account"].isin(f["account"].unique()) & monthly["month"].isin(f["month"].unique())].copy()
+    st.markdown("### " + tr("Monthly follower totals", "Месячные итоги подписчиков"))
+    st.caption(tr(
+        "This is the dashboard source of truth. Followers paid includes every PR row for the region, even when its post ID was not matched. Leave a manual field empty to use the imported value.",
+        "Это источник данных для Dashboard. Followers paid включает все PR-строки региона, даже без совпавшего ID поста. Пустое ручное поле использует импортированное значение.",
+    ))
+    monthly_cols = ["account", "month", "imported_total_followers", "imported_paid_followers", "manual_total_followers", "manual_paid_followers", "total_followers", "paid_followers", "organic_followers", "period_start", "period_end"]
+    if has_permission(user, "edit_reports"):
+        edited_monthly = st.data_editor(monthly[monthly_cols], use_container_width=True, hide_index=True,
+            disabled=[c for c in monthly_cols if c not in ("manual_total_followers", "manual_paid_followers")],
+            column_config={
+                "account": tr("Region", "Регион"), "month": tr("Month", "Месяц"),
+                "imported_total_followers": "Followers total — imported", "imported_paid_followers": "Followers paid — imported",
+                "manual_total_followers": st.column_config.NumberColumn("Followers total — manual", min_value=0, step=1, format="%d"),
+                "manual_paid_followers": st.column_config.NumberColumn("Followers paid — manual", min_value=0, step=1, format="%d"),
+                "total_followers": "Followers total", "paid_followers": "Followers paid", "organic_followers": "Followers organic",
+                "period_start": None, "period_end": None,
+            }, key="monthly_follower_totals_editor")
+        if st.button(tr("Save monthly totals", "Сохранить месячные итоги"), type="primary", use_container_width=True):
+            try:
+                changed = save_monthly_follower_totals(edited_monthly, user)
+                st.success(tr(f"Saved months: {changed}.", f"Сохранено месяцев: {changed}."))
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+    else:
+        st.dataframe(monthly[["account", "month", "total_followers", "paid_followers", "organic_followers"]], use_container_width=True, hide_index=True)
 
     total_followers = int(f["final_followers"].sum())
     total_spend = float(f["spend_usd"].sum())
@@ -32,7 +62,7 @@ def page_report(user: dict) -> None:
     cpf = total_spend / total_pr if total_pr > 0 else None
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Rows", f"{len(f):,}")
-    c2.metric("Final followers", f"{total_followers:,}")
+    c2.metric("Followers organic", f"{total_followers:,}")
     c3.metric("Spend", f"${total_spend:,.2f}")
     c4.metric("CPF", "—" if cpf is None else f"${cpf:,.2f}")
 
@@ -68,9 +98,9 @@ def page_report(user: dict) -> None:
                 "publication_id": tr("Publication ID", "ID публикации"),
                 "publication_link": st.column_config.LinkColumn(tr("Link", "Ссылка")),
                 "post_reach": tr("Post reach", "Охват поста"),
-                "meta_followers": tr("Meta followers", "Подписчики Meta"),
-                "pr_followers": tr("PR for calculation", "PR для расчёта"),
-                "final_followers": tr("Final followers", "Итог подписчиков"),
+                "meta_followers": "Followers total",
+                "pr_followers": "Followers paid",
+                "final_followers": "Followers organic",
                 "warning": tr("Comment", "Комментарий"),
                 "period_start": None,
                 "period_end": None,
@@ -102,14 +132,14 @@ def page_report(user: dict) -> None:
                         "publication_id": tr("Publication ID", "ID публикации"),
                         "publication_link": st.column_config.LinkColumn(tr("Link", "Ссылка")),
                         "post_reach": tr("Post reach", "Охват поста"),
-                        "meta_followers": tr("Meta followers", "Подписчики Meta"),
-                        "imported_pr_followers": tr("PR from CSV", "PR из CSV"),
+                        "meta_followers": "Followers total",
+                        "imported_pr_followers": "Followers paid — imported",
                         "manual_pr_followers": st.column_config.NumberColumn(
-                            tr("Manual PR", "PR вручную"), min_value=0, step=1, format="%d",
+                            tr("Followers paid — manual", "Followers paid — вручную"), min_value=0, step=1, format="%d",
                             help=tr("Empty means use the CSV value", "Пусто — использовать значение из CSV"),
                         ),
-                        "pr_followers": tr("PR for calculation", "PR для расчёта"),
-                        "final_followers": tr("Final followers", "Итог подписчиков"),
+                        "pr_followers": "Followers paid",
+                        "final_followers": "Followers organic",
                         "warning": tr("Comment", "Комментарий"),
                         "period_start": None,
                         "period_end": None,
@@ -145,9 +175,9 @@ def page_report(user: dict) -> None:
             "publication_date": tr("Publication date", "Дата публикации"),
             "publication_id": tr("Publication ID", "ID публикации"),
             "post_reach": tr("Post reach", "Охват поста"),
-            "meta_followers": tr("Meta followers", "Подписчики Meta"),
-            "pr_followers": tr("PR followers for calculation", "Подписчики PR для расчёта"),
-            "final_followers": tr("Final followers", "Итог подписчиков"),
+            "meta_followers": "Followers total",
+            "pr_followers": "Followers paid",
+            "final_followers": "Followers organic",
             "spend_usd": st.column_config.NumberColumn("Spend, USD", format="$%.2f"),
             "cpf_usd": st.column_config.NumberColumn("CPF, USD", format="$%.2f"),
             "meta_uploaded_by": tr("Meta uploaded by", "Meta загрузил"),

@@ -287,6 +287,85 @@ def recalc_final(account: str, period_start: str, period_end: str) -> None:
                 ),
             )
         conn.commit()
+    recalc_monthly_totals(account, period_start, period_end)
+
+
+def recalc_monthly_totals(account: str, period_start: str, period_end: str) -> None:
+    """Persist the complete regional month, including paid rows not matched to Meta posts."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        imported_total = int(conn.execute(
+            "SELECT COALESCE(SUM(meta_followers), 0) FROM meta_publications WHERE account=? AND period_start=? AND period_end=?",
+            (account, period_start, period_end),
+        ).fetchone()[0])
+        imported_paid = int(conn.execute(
+            """
+            SELECT COALESCE(SUM(paid), 0) FROM (
+                SELECT COALESCE(o.manual_pr_followers, p.pr_followers) AS paid
+                FROM pr_ads p
+                LEFT JOIN follower_overrides o USING(account, period_start, period_end, publication_id)
+                WHERE p.account=? AND p.period_start=? AND p.period_end=?
+                UNION ALL
+                SELECT o.manual_pr_followers AS paid
+                FROM follower_overrides o
+                LEFT JOIN pr_ads p USING(account, period_start, period_end, publication_id)
+                WHERE o.account=? AND o.period_start=? AND o.period_end=? AND p.publication_id IS NULL
+            )
+            """,
+            (account, period_start, period_end, account, period_start, period_end),
+        ).fetchone()[0])
+        existing = conn.execute(
+            "SELECT manual_total_followers, manual_paid_followers, updated_by FROM monthly_follower_totals WHERE account=? AND period_start=? AND period_end=?",
+            (account, period_start, period_end),
+        ).fetchone()
+        manual_total = existing["manual_total_followers"] if existing else None
+        manual_paid = existing["manual_paid_followers"] if existing else None
+        total = int(manual_total) if manual_total is not None else imported_total
+        paid = int(manual_paid) if manual_paid is not None else imported_paid
+        conn.execute(
+            """
+            INSERT INTO monthly_follower_totals(
+                account, period_start, period_end, month, imported_total_followers, imported_paid_followers,
+                manual_total_followers, manual_paid_followers, total_followers, paid_followers,
+                organic_followers, updated_by, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(account, period_start, period_end) DO UPDATE SET
+                imported_total_followers=excluded.imported_total_followers,
+                imported_paid_followers=excluded.imported_paid_followers,
+                total_followers=excluded.total_followers,
+                paid_followers=excluded.paid_followers,
+                organic_followers=excluded.organic_followers,
+                updated_at=excluded.updated_at
+            """,
+            (account, period_start, period_end, period_start[:7], imported_total, imported_paid,
+             manual_total, manual_paid, total, paid, max(0, total - paid),
+             existing["updated_by"] if existing else None, now_utc()),
+        )
+        conn.commit()
+
+
+def save_monthly_follower_totals(rows: pd.DataFrame, user: dict) -> int:
+    require_permission(user, "edit_reports")
+    updated_at = now_utc()
+    affected: list[tuple[str, str, str]] = []
+    with sqlite3.connect(DB_PATH) as conn:
+        for _, row in rows.iterrows():
+            manual_total = None if pd.isna(row["manual_total_followers"]) else int(row["manual_total_followers"])
+            manual_paid = None if pd.isna(row["manual_paid_followers"]) else int(row["manual_paid_followers"])
+            if manual_total is not None and manual_total < 0 or manual_paid is not None and manual_paid < 0:
+                raise ValueError(tr("Follower counts cannot be negative.", "Количество подписчиков не может быть отрицательным."))
+            if manual_total is not None and manual_paid is not None and manual_paid > manual_total:
+                raise ValueError(tr("Paid followers cannot exceed total followers.", "Платных подписчиков не может быть больше, чем всех подписчиков."))
+            key = (str(row["account"]), str(row["period_start"]), str(row["period_end"]))
+            conn.execute(
+                "UPDATE monthly_follower_totals SET manual_total_followers=?, manual_paid_followers=?, updated_by=?, updated_at=? WHERE account=? AND period_start=? AND period_end=?",
+                (manual_total, manual_paid, user["username"], updated_at, *key),
+            )
+            affected.append(key)
+        conn.commit()
+    for key in affected:
+        recalc_monthly_totals(*key)
+    return len(affected)
 
 
 def save_follower_overrides(rows: pd.DataFrame, user: dict) -> int:

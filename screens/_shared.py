@@ -98,7 +98,7 @@ def period_picker(container, available_periods: list[str]) -> list[str]:
     return st.session_state["filter_periods"]
 
 
-def shared_results_filters(df: pd.DataFrame) -> tuple[list[str], list[str], bool]:
+def shared_results_filters(df: pd.DataFrame, show_warnings: bool = True) -> tuple[list[str], list[str], bool]:
     accounts = sorted(df["account"].dropna().unique().tolist())
     available_periods = sorted(df["month"].dropna().astype(str).unique().tolist(), reverse=True)
     defaults = {
@@ -125,7 +125,8 @@ def shared_results_filters(df: pd.DataFrame) -> tuple[list[str], list[str], bool
     st.session_state["_filter_accounts"] = st.session_state["filter_accounts"]
     st.session_state["_filter_warnings"] = st.session_state["filter_warnings"]
 
-    c1, c2, c3 = st.columns([1.3, 1.1, .9])
+    filter_columns = st.columns([1.3, 1.1, .9]) if show_warnings else st.columns(2)
+    c1, c2 = filter_columns[:2]
     selected_accounts = c1.multiselect(
         tr("Region / account", "Регион / аккаунт"),
         accounts,
@@ -134,12 +135,12 @@ def shared_results_filters(df: pd.DataFrame) -> tuple[list[str], list[str], bool
         args=("_filter_accounts", "filter_accounts"),
     )
     selected_periods = period_picker(c2, available_periods)
-    only_warnings = c3.checkbox(
-        tr("Only warnings", "Только предупреждения"),
-        key="_filter_warnings",
-        on_change=remember_shared_filter,
-        args=("_filter_warnings", "filter_warnings"),
-    )
+    only_warnings = False
+    if show_warnings:
+        only_warnings = filter_columns[2].checkbox(
+            tr("Only warnings", "Только предупреждения"), key="_filter_warnings",
+            on_change=remember_shared_filter, args=("_filter_warnings", "filter_warnings"),
+        )
     return selected_accounts, selected_periods, only_warnings
 
 
