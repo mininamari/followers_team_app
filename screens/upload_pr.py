@@ -3,7 +3,8 @@ from __future__ import annotations
 import streamlit as st
 
 from core.auth import has_permission
-from core.csv_import import import_pr, read_csv_any
+from core.config import PR_FOLLOWERS_COL, PR_PAGE_COL
+from core.csv_import import import_pr, pr_page_summary, read_table_any
 from core.db import accounts_in_db
 from core.i18n import tr
 from core.style import hero
@@ -30,11 +31,57 @@ def page_upload_pr(user: dict) -> None:
         selected = st.selectbox(tr("Region / account", "Регион / аккаунт"), default_options, index=0 if default_options else None)
         custom = st.text_input(tr("Or enter a new account manually", "Или введите новый аккаунт вручную"), placeholder="novakid_germany")
         account = custom.strip() or selected
-    pr_file = st.file_uploader(tr("Novakid PR CSV", "CSV из Novakid PR"), type=["csv"], key="pr")
+    add_mode_label = tr("Add only new rows", "Добавить только новые строки")
+    update_mode_label = tr("Update existing + add new", "Обновить существующие + добавить новые")
+    import_mode = st.radio(
+        tr("Import mode", "Режим импорта"),
+        [add_mode_label, update_mode_label],
+        horizontal=True,
+        help=tr(
+            "Manual corrections are preserved in both modes.",
+            "Ручные корректировки сохраняются в обоих режимах.",
+        ),
+    )
+    add_only = import_mode == add_mode_label
+    if add_only:
+        st.caption(tr(
+            "Safe mode: existing imported rows and manual corrections remain unchanged.",
+            "Безопасный режим: существующие импортированные строки и ручные корректировки не изменятся.",
+        ))
+    else:
+        st.caption(tr(
+            "Matching imported rows will receive values from the new file; missing old rows will not be deleted. Manual corrections remain in effect.",
+            "Совпавшие импортированные строки получат значения из нового файла; старые строки, которых нет в файле, не удаляются. Ручные корректировки продолжат действовать.",
+        ))
+    pr_file = st.file_uploader(tr("Novakid PR CSV / Excel", "CSV / Excel из Novakid PR"), type=["csv", "xlsx"], key="pr")
+    page_mapping: dict[str, str] = {}
     if pr_file:
         try:
-            preview = read_csv_any(pr_file)
+            preview = read_table_any(pr_file)
             st.dataframe(preview.head(10), use_container_width=True, hide_index=True)
+            pages = pr_page_summary(pr_file)
+            if not pages.empty:
+                st.markdown("#### " + tr("Page mapping", "Сопоставление страниц"))
+                options = sorted(set(existing + pages["account"].dropna().astype(str).tolist()) - {""})
+                mapped_pages = st.data_editor(
+                    pages,
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=[PR_PAGE_COL, PR_FOLLOWERS_COL],
+                    column_config={
+                        PR_PAGE_COL: tr("Facebook page", "Страница Facebook"),
+                        PR_FOLLOWERS_COL: tr("Paid followers", "Платные подписчики"),
+                        "account": st.column_config.SelectboxColumn(
+                            tr("Instagram account", "Instagram-аккаунт"), options=options, required=True,
+                        ),
+                    },
+                    key="pr_page_mapping",
+                )
+                page_mapping = dict(zip(mapped_pages[PR_PAGE_COL], mapped_pages["account"]))
+                st.caption(tr(
+                    f"File total: {int(pages[PR_FOLLOWERS_COL].sum()):,} paid followers.",
+                    f"Итого в файле: {int(pages[PR_FOLLOWERS_COL].sum()):,} платных подписчиков.",
+                ))
         except Exception as exc:
             st.error(str(exc))
     if st.button(tr("Save PR and recalculate", "Сохранить PR и пересчитать"), type="primary", use_container_width=True):
@@ -42,8 +89,17 @@ def page_upload_pr(user: dict) -> None:
             st.error(tr("Upload a CSV file.", "Загрузите CSV."))
         else:
             try:
-                rows, warnings = import_pr(pr_file, user, account, auto_detect)
-                target = tr("by Meta accounts", "по аккаунтам из Meta") if auto_detect else tr(f"for {account}", f"для {account}")
+                rows, warnings = import_pr(
+                    pr_file, user, account, auto_detect,
+                    page_account_map=page_mapping,
+                    add_only=add_only,
+                )
+                if page_mapping:
+                    target = tr("by Page Name", "по названиям страниц")
+                elif auto_detect:
+                    target = tr("by Meta accounts", "по аккаунтам из Meta")
+                else:
+                    target = tr(f"for {account}", f"для {account}")
                 st.success(tr(f"PR saved {target}. Rows: {rows}. The report was recalculated automatically.", f"PR сохранен {target}. Строк: {rows}. Отчет пересчитан автоматически."))
                 for w in warnings:
                     st.warning(w)

@@ -21,6 +21,7 @@ from core.config import (
     PR_START_COL,
     PR_END_COL,
     PR_AD_NAME_COL,
+    PR_PAGE_COL,
     PR_FOLLOWERS_COL,
     PR_SPEND_COL,
     PR_COLUMN_ALIASES,
@@ -178,8 +179,13 @@ def infer_accounts_from_meta(df: pd.DataFrame) -> list[str]:
     ])
 
 
-def read_csv_any(uploaded_file) -> pd.DataFrame:
+def read_table_any(uploaded_file) -> pd.DataFrame:
     raw = uploaded_file.getvalue()
+    if str(uploaded_file.name).lower().endswith(".xlsx"):
+        try:
+            return pd.read_excel(io.BytesIO(raw))
+        except Exception as exc:
+            raise ValueError(tr("Could not read the Excel file.", "Не удалось прочитать Excel-файл.")) from exc
     for enc in ("utf-8-sig", "utf-16", "cp1251", "latin1"):
         try:
             text = raw.decode(enc)
@@ -189,6 +195,41 @@ def read_csv_any(uploaded_file) -> pd.DataFrame:
         except Exception:
             continue
     raise ValueError(tr("Could not read the CSV. Check the encoding and file format.", "Не удалось прочитать CSV. Проверьте кодировку и формат файла."))
+
+
+def read_csv_any(uploaded_file) -> pd.DataFrame:
+    """Backward-compatible name; reads both CSV and Excel uploads."""
+    return read_table_any(uploaded_file)
+
+
+PR_PAGE_ACCOUNT_SUGGESTIONS = {
+    "novakid türkiye": "novakidturkiye",
+    "novakid school": "novakidschool",
+    "novakid italia": "novakid_italia",
+    "novakid españa": "novakid_spain",
+    "novakid deutschland": "novakid_de",
+    "novakid mena": "novakid_mena",
+    "novakid polska": "novakidpolska",
+    "novakid korea": "novakid_korea",
+    "novakid romania": "novakid_romania",
+    "novakid france": "novakid_france",
+    "novakid israel": "novakid_israel",
+    "novakid japan": "novakid_jp",
+    "novakid czech": "novakid_czech",
+}
+
+
+def pr_page_summary(uploaded_file) -> pd.DataFrame:
+    df, _ = normalize_pr_columns(read_table_any(uploaded_file))
+    if PR_PAGE_COL not in df.columns or PR_FOLLOWERS_COL not in df.columns:
+        return pd.DataFrame(columns=[PR_PAGE_COL, PR_FOLLOWERS_COL, "account"])
+    data = df.copy()
+    data[PR_PAGE_COL] = data[PR_PAGE_COL].fillna("").astype(str).str.strip()
+    data = data[(data[PR_PAGE_COL] != "") & (data[PR_PAGE_COL] != "12")].copy()
+    data[PR_FOLLOWERS_COL] = to_number(data[PR_FOLLOWERS_COL]).astype(int)
+    summary = data.groupby(PR_PAGE_COL, as_index=False)[PR_FOLLOWERS_COL].sum()
+    summary["account"] = summary[PR_PAGE_COL].str.casefold().map(PR_PAGE_ACCOUNT_SUGGESTIONS).fillna("")
+    return summary.sort_values(PR_FOLLOWERS_COL, ascending=False)
 
 
 def save_uploaded_file(uploaded_file, file_type: str, data: Optional[bytes] = None) -> str:
@@ -516,12 +557,20 @@ def import_meta(uploaded_file, user: dict, manual_start: Optional[date], manual_
     return len(rows), warnings
 
 
-def import_pr(uploaded_file, user: dict, account: str, auto_detect_accounts: bool = False) -> tuple[int, list[str]]:
+def import_pr(
+    uploaded_file,
+    user: dict,
+    account: str,
+    auto_detect_accounts: bool = False,
+    page_account_map: Optional[dict[str, str]] = None,
+    add_only: bool = False,
+) -> tuple[int, list[str]]:
     require_permission(user, "upload_pr")
-    if not auto_detect_accounts and not account.strip():
+    page_account_map = {str(k).strip(): str(v).strip() for k, v in (page_account_map or {}).items() if str(v).strip()}
+    if not auto_detect_accounts and not page_account_map and not account.strip():
         raise ValueError(tr("Choose an account for the PR file, for example novakid_israel.", "Для PR-файла нужно выбрать аккаунт, например novakid_israel."))
     account = account.strip()
-    if not auto_detect_accounts and not is_novakid_account(account):
+    if not auto_detect_accounts and not page_account_map and not is_novakid_account(account):
         raise ValueError(tr("Data can only be saved for Novakid accounts.", "Можно сохранять данные только для аккаунтов Novakid."))
     df = read_csv_any(uploaded_file)
     df, used_aliases = normalize_pr_columns(df)
@@ -530,6 +579,19 @@ def import_pr(uploaded_file, user: dict, account: str, auto_detect_accounts: boo
     if used_aliases:
         warnings.append(tr("PR columns were recognized by alternative names: ", "PR-колонки распознаны по альтернативным названиям: ") + ", ".join(used_aliases) + ".")
     df = df.copy()
+    if page_account_map and PR_PAGE_COL in df.columns:
+        df[PR_PAGE_COL] = df[PR_PAGE_COL].fillna("").astype(str).str.strip()
+        summary_rows = df[PR_PAGE_COL] == "12"
+        if summary_rows.any():
+            df = df[~summary_rows].copy()
+            warnings.append(tr("The Excel summary row was skipped.", "Итоговая строка Excel была пропущена."))
+        unknown_pages = sorted(set(df.loc[~df[PR_PAGE_COL].isin(page_account_map), PR_PAGE_COL]) - {""})
+        if unknown_pages:
+            raise ValueError(tr(
+                "Choose an Instagram account for every page: " + ", ".join(unknown_pages),
+                "Выберите Instagram-аккаунт для каждой страницы: " + ", ".join(unknown_pages),
+            ))
+        df["__account"] = df[PR_PAGE_COL].map(page_account_map)
     df[PR_START_COL] = df[PR_START_COL].apply(normalize_period)
     df[PR_END_COL] = df[PR_END_COL].apply(normalize_period)
     starts = sorted(df[PR_START_COL].dropna().unique())
@@ -557,15 +619,18 @@ def import_pr(uploaded_file, user: dict, account: str, auto_detect_accounts: boo
     df[PR_FOLLOWERS_COL] = to_number(df[PR_FOLLOWERS_COL]).astype(int)
     df[PR_SPEND_COL] = to_number(df[PR_SPEND_COL]).astype(float)
     df = df[df[PR_AD_NAME_COL] != ""].copy()
+    group_columns = (["__account", PR_AD_NAME_COL] if page_account_map and PR_PAGE_COL in df.columns else [PR_AD_NAME_COL])
     grouped = (
-        df.groupby(PR_AD_NAME_COL, as_index=False)
+        df.groupby(group_columns, as_index=False)
         .agg({PR_FOLLOWERS_COL: "sum", PR_SPEND_COL: "sum"})
         .rename(columns={PR_AD_NAME_COL: "publication_id"})
     )
     if grouped.empty:
         raise ValueError(tr("Novakid PR has no rows with a filled ad name.", "В Novakid PR нет строк с заполненным названием объявления."))
 
-    if auto_detect_accounts:
+    if page_account_map and "__account" in grouped.columns:
+        grouped = grouped.rename(columns={"__account": "account"})
+    elif auto_detect_accounts:
         ids = grouped["publication_id"].dropna().astype(str).tolist()
         placeholders = ",".join(["?"] * len(ids))
         with connect_db() as conn:
@@ -616,6 +681,24 @@ def import_pr(uploaded_file, user: dict, account: str, auto_detect_accounts: boo
             float(r[PR_SPEND_COL]), uploaded_file.name, user["username"], uploaded_at,
         ))
 
+    rows_to_save = rows
+    if add_only:
+        with connect_db() as conn:
+            existing_keys = {
+                (str(row[0]), str(row[1]))
+                for row in conn.execute(
+                    "SELECT account, publication_id FROM pr_ads WHERE period_start=? AND period_end=?",
+                    (period_start, period_end),
+                ).fetchall()
+            }
+        rows_to_save = [row for row in rows if (str(row[0]), str(row[4])) not in existing_keys]
+        skipped = len(rows) - len(rows_to_save)
+        if skipped:
+            warnings.append(tr(
+                f"Existing rows left unchanged: {skipped}.",
+                f"Существующие строки оставлены без изменений: {skipped}.",
+            ))
+
     with connect_db() as conn:
         conn.executemany(
             """
@@ -632,7 +715,7 @@ def import_pr(uploaded_file, user: dict, account: str, auto_detect_accounts: boo
                 uploaded_by=excluded.uploaded_by,
                 uploaded_at=excluded.uploaded_at
             """,
-            rows,
+            rows_to_save,
         )
         conn.execute(
             "INSERT INTO uploads(file_type,account,period_start,period_end,filename,stored_path,uploaded_by,uploaded_at,rows_saved,warnings) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -645,12 +728,13 @@ def import_pr(uploaded_file, user: dict, account: str, auto_detect_accounts: boo
                 stored_path,
                 user["username"],
                 uploaded_at,
-                len(rows),
+                len(rows_to_save),
                 "\n".join(warnings),
             ),
         )
         conn.commit()
 
-    for affected_account in sorted(grouped["account"].dropna().astype(str).unique()):
+    affected_accounts = sorted({str(row[0]) for row in rows_to_save})
+    for affected_account in affected_accounts:
         recalc_final(affected_account, period_start, period_end)
-    return len(rows), warnings
+    return len(rows_to_save), warnings
