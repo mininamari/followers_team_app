@@ -11,6 +11,7 @@ import pandas as pd
 
 from core.auth import hash_password, require_permission
 from core.config import (
+    ACCOUNT_ALIASES,
     BACKUP_DIR,
     BACKUP_INTERVAL_DAYS,
     BACKUP_RETENTION,
@@ -260,6 +261,7 @@ def init_db() -> None:
         )
         conn.commit()
         ensure_schema_columns(conn)
+        merge_known_account_aliases(conn)
         backfill_monthly_follower_totals(conn)
         purge_non_novakid_data(conn)
         sanitize_stored_meta_uploads(conn)
@@ -318,6 +320,55 @@ def backfill_monthly_follower_totals(conn: sqlite3.Connection) -> None:
             """,
             (account, period_start, period_end, period_start[:7], int(total), int(paid), int(total), int(paid), max(0, int(total) - int(paid)), current),
         )
+    conn.commit()
+
+
+def merge_known_account_aliases(conn) -> None:
+    """Merge account names created by older import suggestions into canonical usernames."""
+    for alias, canonical in ACCOUNT_ALIASES.items():
+        pr_rows = conn.execute(
+            """
+            SELECT period_start, period_end, month, publication_id, pr_followers,
+                   spend_usd, pr_filename, uploaded_by, uploaded_at
+            FROM pr_ads WHERE account=?
+            """,
+            (alias,),
+        ).fetchall()
+        conn.executemany(
+            """
+            INSERT INTO pr_ads(
+                account, period_start, period_end, month, publication_id, pr_followers,
+                spend_usd, pr_filename, uploaded_by, uploaded_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(account, period_start, period_end, publication_id) DO NOTHING
+            """,
+            [(canonical, *tuple(row)) for row in pr_rows],
+        )
+
+        override_rows = conn.execute(
+            """
+            SELECT period_start, period_end, publication_id, manual_pr_followers, updated_by, updated_at
+            FROM follower_overrides WHERE account=?
+            """,
+            (alias,),
+        ).fetchall()
+        conn.executemany(
+            """
+            INSERT INTO follower_overrides(
+                account, period_start, period_end, publication_id,
+                manual_pr_followers, updated_by, updated_at
+            ) VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(account, period_start, period_end, publication_id) DO NOTHING
+            """,
+            [(canonical, *tuple(row)) for row in override_rows],
+        )
+
+        conn.execute("DELETE FROM follower_overrides WHERE account=?", (alias,))
+        conn.execute("DELETE FROM final_results WHERE account=?", (alias,))
+        conn.execute("DELETE FROM monthly_follower_totals WHERE account=?", (alias,))
+        conn.execute("DELETE FROM pr_ads WHERE account=?", (alias,))
+        conn.execute("UPDATE uploads SET account=? WHERE account=?", (canonical, alias))
+        conn.execute("UPDATE fb_ad_accounts SET novakid_account=? WHERE novakid_account=?", (canonical, alias))
     conn.commit()
 
 
