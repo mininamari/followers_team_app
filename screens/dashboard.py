@@ -60,10 +60,27 @@ def page_dashboard() -> None:
     ])
     with organic_tab:
         c1, c2 = st.columns([1.35, 1])
-        monthly = f.groupby("month", as_index=False)["organic_followers"].sum().sort_values("month")
+        monthly_by_account = (
+            f.groupby(["month", "account"], as_index=False)["organic_followers"]
+            .sum()
+            .sort_values(["month", "account"])
+        )
         by_region = f.groupby("account", as_index=False)["organic_followers"].sum().sort_values("organic_followers", ascending=False)
         with c1:
-            fig = px.line(monthly, x="month", y="organic_followers", markers=True, title=tr("Organic trend", "Динамика organic"))
+            fig = px.bar(
+                monthly_by_account,
+                x="month",
+                y="organic_followers",
+                color="account",
+                barmode="stack",
+                title=tr("Organic by month and region", "Organic по месяцам и регионам"),
+                labels={
+                    "month": tr("Month", "Месяц"),
+                    "organic_followers": "Followers organic",
+                    "account": tr("Region", "Регион"),
+                },
+                color_discrete_sequence=px.colors.qualitative.Bold,
+            )
             _chart_layout(fig, "Followers organic")
             st.plotly_chart(fig, use_container_width=True)
         with c2:
