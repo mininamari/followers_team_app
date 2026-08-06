@@ -60,9 +60,11 @@ META_COLUMN_ALIASES = {
 PR_START_COL = "Дата начала отчетности"
 PR_END_COL = "Окончание отчетности"
 PR_AD_NAME_COL = "Название объявления"
+PR_PAGE_COL = "Название Страницы"
 PR_FOLLOWERS_COL = "Подписки в Instagram"
 PR_SPEND_COL = "Потраченная сумма (USD)"
 PR_COLUMN_ALIASES = {
+    PR_PAGE_COL: ["Название страницы", "Page name", "Page Name"],
     PR_FOLLOWERS_COL: [
         "Подписчики Instagram",
         "подписчики Instagram",
