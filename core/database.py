@@ -34,6 +34,8 @@ class HybridRow:
 
 
 def _hybrid_row_factory(cursor):
+    if cursor.description is None:
+        return lambda values: values
     columns = [column.name for column in cursor.description]
     return lambda values: HybridRow(columns, values)
 
@@ -47,7 +49,8 @@ class PostgresConnection:
 
     @staticmethod
     def _sql(query: str) -> str:
-        return query.replace("?", "%s")
+        # psycopg uses percent-style binding; escape literal SQL percentages first.
+        return query.replace("%", "%%").replace("?", "%s")
 
     @property
     def row_factory(self):
