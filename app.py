@@ -34,10 +34,10 @@ def login_screen() -> None:
         hero(
             "Novakid Social Reports",
             tr(
-                "Sign in to upload Meta and PR CSV files, calculate followers, and monitor CPF by region.",
-                "Войдите, чтобы загружать Meta и PR CSV, считать подписчиков и следить за CPF по регионам.",
+                "Sign in to upload Meta and PR CSV files and monitor total, paid, and organic followers by region.",
+                "Войдите, чтобы загружать Meta и PR CSV и следить за total, paid и organic подписчиками по регионам.",
             ),
-            ["Meta + PR", "Regions", "CPF", "Team access"],
+            ["Followers total", "Followers paid", "Followers organic", "Team access"],
         )
         with st.form("login"):
             st.markdown("### " + tr("Team Login", "Вход в командный кабинет"))
