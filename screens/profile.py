@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import sqlite3
 
 import streamlit as st
 
 from core.auth import get_user, hash_password, verify_password
-from core.config import DB_PATH
+from core.database import connect_db
 from core.i18n import tr
 from core.style import hero
 
@@ -19,7 +18,7 @@ def page_profile(user: dict) -> None:
     if ok:
         current = get_user(user["username"])
         if current and verify_password(old, current["password_hash"]) and len(new) >= 8:
-            with sqlite3.connect(DB_PATH) as conn:
+            with connect_db() as conn:
                 conn.execute("UPDATE users SET password_hash=? WHERE username=?", (hash_password(new), user["username"]))
                 conn.commit()
             st.success(tr("Password updated.", "Пароль обновлен."))

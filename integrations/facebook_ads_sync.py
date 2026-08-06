@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
 
-from core.config import DB_PATH, now_utc
+from core.config import now_utc
+from core.database import connect_db
 from integrations.facebook_ads_client import (
     FacebookApiError,
     get_ad_creative,
@@ -28,16 +28,17 @@ class SyncResult:
     message: str = ""
 
 
-def _log_start(conn: sqlite3.Connection, account_id: str) -> int:
+def _log_start(conn, account_id: str) -> int:
     cur = conn.execute(
-        "INSERT INTO fb_sync_log(account_id, started_at, status) VALUES(?,?,?)",
+        "INSERT INTO fb_sync_log(account_id, started_at, status) VALUES(?,?,?) RETURNING id",
         (account_id, now_utc(), "running"),
     )
+    log_id = int(cur.fetchone()[0])
     conn.commit()
-    return cur.lastrowid
+    return log_id
 
 
-def _log_finish(conn: sqlite3.Connection, log_id: int, status: str, message: str) -> None:
+def _log_finish(conn, log_id: int, status: str, message: str) -> None:
     conn.execute(
         "UPDATE fb_sync_log SET finished_at=?, status=?, message=? WHERE id=?",
         (now_utc(), status, message, log_id),
@@ -47,7 +48,7 @@ def _log_finish(conn: sqlite3.Connection, log_id: int, status: str, message: str
 
 def sync_ad_account(account_id: str) -> SyncResult:
     result = SyncResult(account_id=account_id)
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_db() as conn:
         log_id = _log_start(conn, account_id)
         try:
             updated_at = now_utc()
@@ -160,7 +161,7 @@ def sync_ad_account(account_id: str) -> SyncResult:
 
 
 def sync_all_active_accounts() -> list[SyncResult]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_db() as conn:
         account_ids = [
             row[0]
             for row in conn.execute("SELECT account_id FROM fb_ad_accounts WHERE is_active=1").fetchall()
@@ -169,8 +170,7 @@ def sync_all_active_accounts() -> list[SyncResult]:
 
 
 def last_sync_for_account(account_id: str) -> Optional[dict]:
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
+    with connect_db() as conn:
         row = conn.execute(
             """
             SELECT started_at, finished_at, status, message
