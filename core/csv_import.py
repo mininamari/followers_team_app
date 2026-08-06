@@ -32,6 +32,7 @@ from core.config import (
 )
 from core.i18n import tr
 from core.database import connect_db
+from core.follower_totals import period_follower_rows, period_follower_totals
 
 
 # -------------------- generic helpers --------------------
@@ -277,37 +278,30 @@ def latest_publications_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def recalc_final(account: str, period_start: str, period_end: str) -> None:
     with connect_db() as conn:
-        meta_rows = conn.execute(
-            "SELECT * FROM meta_publications WHERE account=? AND period_start=? AND period_end=?",
-            (account, period_start, period_end),
-        ).fetchall()
+        follower_rows = period_follower_rows(conn, account, period_start, period_end)
         current = now_utc()
         conn.execute(
             "DELETE FROM final_results WHERE account=? AND period_start=? AND period_end=?",
             (account, period_start, period_end),
         )
-        for m in meta_rows:
-            pr = conn.execute(
-                "SELECT * FROM pr_ads WHERE account=? AND period_start=? AND period_end=? AND publication_id=?",
-                (account, period_start, period_end, m["publication_id"]),
-            ).fetchone()
-            imported_pr_followers = int(pr["pr_followers"]) if pr else 0
-            override = conn.execute(
-                """
-                SELECT manual_pr_followers, updated_by, updated_at
-                FROM follower_overrides
-                WHERE account=? AND period_start=? AND period_end=? AND publication_id=?
-                """,
-                (account, period_start, period_end, m["publication_id"]),
-            ).fetchone()
-            manual_pr_followers = int(override["manual_pr_followers"]) if override else None
-            pr_followers = manual_pr_followers if manual_pr_followers is not None else imported_pr_followers
+        for row in follower_rows:
+            m = row["meta"]
+            pr = row["pr"]
+            override = row["override"]
+            imported_pr_followers = row["imported_paid"]
+            manual_pr_followers = row["manual_paid"]
+            pr_followers = row["paid"]
             spend = float(pr["spend_usd"]) if pr else 0.0
-            raw_final = int(m["meta_followers"]) - pr_followers
-            warning = ""
-            if raw_final < 0:
-                warning = tr("Follower count became negative. Check Meta/Novakid PR data.", "Получилось отрицательное значение подписчиков. Нужно проверить Meta/Novakid PR.")
-            final_followers = max(0, raw_final)
+            if row["paid_only"]:
+                warning = ""
+            elif row["paid"] > row["raw_total"]:
+                warning = tr(
+                    "Paid followers exceed the Meta total; total was expanded to preserve total = paid + organic.",
+                    "Paid больше значения Meta; total увеличен, чтобы сохранить total = paid + organic.",
+                )
+            else:
+                warning = ""
+            final_followers = row["organic"]
             cpf = round(spend / pr_followers, 4) if pr_followers > 0 else None
             conn.execute(
                 """
@@ -319,9 +313,11 @@ def recalc_final(account: str, period_start: str, period_end: str) -> None:
                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    account, m["account_name"], period_start, period_end, m["month"], m["publication_date"], m["publication_id"],
-                    m["publication_link"], int(m["post_reach"]), int(m["meta_followers"]), imported_pr_followers, manual_pr_followers,
-                    pr_followers, final_followers, spend, cpf, warning, m["uploaded_by"],
+                    account, m["account_name"] if m else account, period_start, period_end,
+                    m["month"] if m else period_start[:7], m["publication_date"] if m else None, row["publication_id"],
+                    m["publication_link"] if m else "", int(m["post_reach"]) if m else 0, row["total"],
+                    imported_pr_followers, manual_pr_followers, pr_followers, final_followers, spend, cpf, warning,
+                    m["uploaded_by"] if m else None,
                     pr["uploaded_by"] if pr else None, override["updated_by"] if override else None,
                     override["updated_at"] if override else None, current,
                 ),
@@ -331,52 +327,39 @@ def recalc_final(account: str, period_start: str, period_end: str) -> None:
 
 
 def recalc_monthly_totals(account: str, period_start: str, period_end: str) -> None:
-    """Persist the complete regional month, including paid rows not matched to Meta posts."""
+    """Persist total = paid + organic, treating unmatched PR rows as paid-only."""
     with connect_db() as conn:
-        imported_total = int(conn.execute(
-            "SELECT COALESCE(SUM(meta_followers), 0) FROM meta_publications WHERE account=? AND period_start=? AND period_end=?",
-            (account, period_start, period_end),
-        ).fetchone()[0])
-        imported_paid = int(conn.execute(
-            """
-            SELECT COALESCE(SUM(paid), 0) FROM (
-                SELECT COALESCE(o.manual_pr_followers, p.pr_followers) AS paid
-                FROM pr_ads p
-                LEFT JOIN follower_overrides o USING(account, period_start, period_end, publication_id)
-                WHERE p.account=? AND p.period_start=? AND p.period_end=?
-                UNION ALL
-                SELECT o.manual_pr_followers AS paid
-                FROM follower_overrides o
-                LEFT JOIN pr_ads p USING(account, period_start, period_end, publication_id)
-                WHERE o.account=? AND o.period_start=? AND o.period_end=? AND p.publication_id IS NULL
-            )
-            """,
-            (account, period_start, period_end, account, period_start, period_end),
-        ).fetchone()[0])
+        imported = period_follower_totals(conn, account, period_start, period_end)
+        imported_total = imported["total"]
+        imported_paid = imported["paid"]
+        paid_only = imported["paid_only"]
         existing = conn.execute(
             "SELECT manual_total_followers, manual_paid_followers, updated_by FROM monthly_follower_totals WHERE account=? AND period_start=? AND period_end=?",
             (account, period_start, period_end),
         ).fetchone()
         manual_total = existing["manual_total_followers"] if existing else None
         manual_paid = existing["manual_paid_followers"] if existing else None
-        total = int(manual_total) if manual_total is not None else imported_total
         paid = int(manual_paid) if manual_paid is not None else imported_paid
+        selected_total = int(manual_total) if manual_total is not None else imported_total
+        total = max(selected_total, paid)
         conn.execute(
             """
             INSERT INTO monthly_follower_totals(
                 account, period_start, period_end, month, imported_total_followers, imported_paid_followers,
+                paid_only_followers,
                 manual_total_followers, manual_paid_followers, total_followers, paid_followers,
                 organic_followers, updated_by, updated_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(account, period_start, period_end) DO UPDATE SET
                 imported_total_followers=excluded.imported_total_followers,
                 imported_paid_followers=excluded.imported_paid_followers,
+                paid_only_followers=excluded.paid_only_followers,
                 total_followers=excluded.total_followers,
                 paid_followers=excluded.paid_followers,
                 organic_followers=excluded.organic_followers,
                 updated_at=excluded.updated_at
             """,
-            (account, period_start, period_end, period_start[:7], imported_total, imported_paid,
+            (account, period_start, period_end, period_start[:7], imported_total, imported_paid, paid_only,
              manual_total, manual_paid, total, paid, max(0, total - paid),
              existing["updated_by"] if existing else None, now_utc()),
         )
@@ -454,6 +437,137 @@ def save_follower_overrides(rows: pd.DataFrame, user: dict) -> int:
 
 
 # -------------------- Import logic --------------------
+
+def _pr_import_preview(
+    rows: list[tuple],
+    rows_to_save: list[tuple],
+    period_start: str,
+    period_end: str,
+    add_only: bool,
+) -> pd.DataFrame:
+    rows_by_account: dict[str, list[tuple]] = {}
+    saved_by_account: dict[str, list[tuple]] = {}
+    for row in rows:
+        rows_by_account.setdefault(str(row[0]), []).append(row)
+    for row in rows_to_save:
+        saved_by_account.setdefault(str(row[0]), []).append(row)
+
+    preview_rows = []
+    overall = {"total": 0, "paid": 0, "organic": 0}
+    with connect_db() as conn:
+        for affected_account in sorted(rows_by_account):
+            current_rows = period_follower_rows(conn, affected_account, period_start, period_end)
+            current_by_id = {row["publication_id"]: row for row in current_rows}
+            current_total = sum(row["total"] for row in current_rows)
+            current_paid = sum(row["paid"] for row in current_rows)
+            current_organic = sum(row["organic"] for row in current_rows)
+            account_rows = rows_by_account[affected_account]
+            saved_rows = saved_by_account.get(affected_account, [])
+            matched_rows = 0
+            paid_only_rows = 0
+            paid_only_followers = 0
+            projected_total = current_total
+            projected_paid = current_paid
+            projected_organic = current_organic
+
+            for saved in saved_rows:
+                publication_id = str(saved[4])
+                imported_paid = int(saved[5])
+                current = current_by_id.get(publication_id)
+                is_matched = bool(current and current["meta"])
+                matched_rows += int(is_matched)
+                paid_only_rows += int(not is_matched)
+                if not is_matched:
+                    paid_only_followers += imported_paid
+
+                if add_only:
+                    old_total = current["total"] if current else 0
+                    old_paid = current["paid"] if current else 0
+                    old_organic = current["organic"] if current else 0
+                    manual_paid = current["manual_paid"] if current else None
+                    new_paid = manual_paid if manual_paid is not None else imported_paid
+                    raw_total = current["raw_total"] if is_matched else 0
+                    new_organic = max(0, raw_total - new_paid) if is_matched else 0
+                    new_total = new_paid + new_organic
+                    projected_total += new_total - old_total
+                    projected_paid += new_paid - old_paid
+                    projected_organic += new_organic - old_organic
+
+            if add_only:
+                monthly_override = conn.execute(
+                    """
+                    SELECT manual_total_followers, manual_paid_followers
+                    FROM monthly_follower_totals
+                    WHERE account=? AND period_start=? AND period_end=?
+                    """,
+                    (affected_account, period_start, period_end),
+                ).fetchone()
+                manual_total = monthly_override["manual_total_followers"] if monthly_override else None
+                manual_paid = monthly_override["manual_paid_followers"] if monthly_override else None
+                projected_paid = int(manual_paid) if manual_paid is not None else projected_paid
+                selected_total = int(manual_total) if manual_total is not None else projected_total
+                projected_total = max(selected_total, projected_paid)
+                projected_organic = projected_total - projected_paid
+                overall["total"] += projected_total
+                overall["paid"] += projected_paid
+                overall["organic"] += projected_organic
+
+            preview_rows.append(
+                {
+                    "account": affected_account,
+                    "file_rows": len(account_rows),
+                    "existing_unchanged": len(account_rows) - len(saved_rows),
+                    "rows_to_save": len(saved_rows),
+                    "matched_meta": matched_rows,
+                    "paid_only": paid_only_rows,
+                    "paid_to_save": sum(int(row[5]) for row in saved_rows),
+                    "paid_only_followers": paid_only_followers,
+                    "projected_total": projected_total if add_only else None,
+                    "projected_paid": projected_paid if add_only else None,
+                    "projected_organic": projected_organic if add_only else None,
+                }
+            )
+
+        if add_only:
+            all_accounts = {
+                str(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT account FROM meta_publications WHERE period_start=? AND period_end=?
+                    UNION
+                    SELECT account FROM pr_ads WHERE period_start=? AND period_end=?
+                    UNION
+                    SELECT account FROM follower_overrides WHERE period_start=? AND period_end=?
+                    UNION
+                    SELECT account FROM monthly_follower_totals WHERE period_start=? AND period_end=?
+                    """,
+                    (
+                        period_start, period_end, period_start, period_end,
+                        period_start, period_end, period_start, period_end,
+                    ),
+                ).fetchall()
+            }
+            for unaffected_account in sorted(all_accounts - set(rows_by_account)):
+                monthly = conn.execute(
+                    """
+                    SELECT total_followers, paid_followers, organic_followers
+                    FROM monthly_follower_totals
+                    WHERE account=? AND period_start=? AND period_end=?
+                    """,
+                    (unaffected_account, period_start, period_end),
+                ).fetchone()
+                if monthly:
+                    overall["total"] += int(monthly["total_followers"])
+                    overall["paid"] += int(monthly["paid_followers"])
+                    overall["organic"] += int(monthly["organic_followers"])
+                else:
+                    current = period_follower_totals(conn, unaffected_account, period_start, period_end)
+                    overall["total"] += current["total"]
+                    overall["paid"] += current["paid"]
+                    overall["organic"] += current["organic"]
+    preview = pd.DataFrame(preview_rows)
+    preview.attrs["overall"] = overall if add_only else None
+    return preview
 
 def import_meta(uploaded_file, user: dict, manual_start: Optional[date], manual_end: Optional[date]) -> tuple[int, list[str]]:
     require_permission(user, "upload_meta")
@@ -565,7 +679,8 @@ def import_pr(
     auto_detect_accounts: bool = False,
     page_account_map: Optional[dict[str, str]] = None,
     add_only: bool = False,
-) -> tuple[int, list[str]]:
+    preview_only: bool = False,
+) -> tuple[int | pd.DataFrame, list[str]]:
     require_permission(user, "upload_pr")
     page_account_map = {
         str(k).strip(): ACCOUNT_ALIASES.get(str(v).strip(), str(v).strip())
@@ -586,10 +701,13 @@ def import_pr(
     df = df.copy()
     if page_account_map and PR_PAGE_COL in df.columns:
         df[PR_PAGE_COL] = df[PR_PAGE_COL].fillna("").astype(str).str.strip()
-        summary_rows = df[PR_PAGE_COL] == "12"
+        summary_rows = df[PR_PAGE_COL].isin(["", "12"])
         if summary_rows.any():
             df = df[~summary_rows].copy()
-            warnings.append(tr("The Excel summary row was skipped.", "Итоговая строка Excel была пропущена."))
+            warnings.append(tr(
+                f"Excel summary/blank page rows skipped: {int(summary_rows.sum())}.",
+                f"Пропущены итоговые/пустые строки Excel: {int(summary_rows.sum())}.",
+            ))
         unknown_pages = sorted(set(df.loc[~df[PR_PAGE_COL].isin(page_account_map), PR_PAGE_COL]) - {""})
         if unknown_pages:
             raise ValueError(tr(
@@ -677,7 +795,6 @@ def import_pr(
     else:
         grouped["account"] = account
 
-    stored_path = save_uploaded_file(uploaded_file, "pr")
     uploaded_at = now_utc()
     rows = []
     for _, r in grouped.iterrows():
@@ -703,6 +820,19 @@ def import_pr(
                 f"Existing rows left unchanged: {skipped}.",
                 f"Существующие строки оставлены без изменений: {skipped}.",
             ))
+
+    preview = _pr_import_preview(rows, rows_to_save, period_start, period_end, add_only)
+    paid_only_rows = int(preview["paid_only"].sum()) if not preview.empty else 0
+    paid_only_followers = int(preview["paid_only_followers"].sum()) if not preview.empty else 0
+    if paid_only_rows:
+        warnings.append(tr(
+            f"Paid-only rows without a matching Meta publication: {paid_only_rows} ({paid_only_followers:,} followers). They increase paid and total; organic stays unchanged.",
+            f"Paid-only строки без пары в Meta: {paid_only_rows} ({paid_only_followers:,} подписчиков). Они увеличивают paid и total; organic не меняется.",
+        ))
+    if preview_only:
+        return preview, warnings
+
+    stored_path = save_uploaded_file(uploaded_file, "pr")
 
     with connect_db() as conn:
         if not add_only:

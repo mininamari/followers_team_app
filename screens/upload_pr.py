@@ -45,8 +45,8 @@ def page_upload_pr(user: dict) -> None:
     add_only = import_mode == add_mode_label
     if add_only:
         st.caption(tr(
-            "Safe mode: existing imported rows and manual corrections remain unchanged.",
-            "Безопасный режим: существующие импортированные строки и ручные корректировки не изменятся.",
+            "Safe mode: existing imported rows and manual corrections remain unchanged. New rows without a Meta pair are added as paid-only and do not reduce organic.",
+            "Безопасный режим: существующие импортированные строки и ручные корректировки не изменятся. Новые строки без пары в Meta добавляются как paid-only и не уменьшают organic.",
         ))
     else:
         st.caption(tr(
@@ -82,6 +82,40 @@ def page_upload_pr(user: dict) -> None:
                     f"File total: {int(pages[PR_FOLLOWERS_COL].sum()):,} paid followers.",
                     f"Итого в файле: {int(pages[PR_FOLLOWERS_COL].sum()):,} платных подписчиков.",
                 ))
+                if page_mapping and all(page_mapping.values()):
+                    import_preview, preview_warnings = import_pr(
+                        pr_file, user, account, auto_detect,
+                        page_account_map=page_mapping,
+                        add_only=add_only,
+                        preview_only=True,
+                    )
+                    st.markdown("#### " + tr("Import preview", "Предпросмотр импорта"))
+                    st.dataframe(
+                        import_preview,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "account": tr("Account", "Аккаунт"),
+                            "file_rows": tr("Rows in file", "Строк в файле"),
+                            "existing_unchanged": tr("Existing unchanged", "Существующие без изменений"),
+                            "rows_to_save": tr("Rows to save", "Будет сохранено"),
+                            "matched_meta": tr("Matched with Meta", "Есть пара в Meta"),
+                            "paid_only": "Paid-only",
+                            "paid_to_save": tr("Paid to save", "Paid к добавлению"),
+                            "paid_only_followers": tr("Paid-only followers", "Paid-only подписчики"),
+                            "projected_total": tr("Projected total", "Total после импорта"),
+                            "projected_paid": tr("Projected paid", "Paid после импорта"),
+                            "projected_organic": tr("Projected organic", "Organic после импорта"),
+                        },
+                    )
+                    overall = import_preview.attrs.get("overall")
+                    if overall:
+                        total_col, paid_col, organic_col = st.columns(3)
+                        total_col.metric(tr("Total after import", "Total после импорта"), f"{overall['total']:,}")
+                        paid_col.metric(tr("Paid after import", "Paid после импорта"), f"{overall['paid']:,}")
+                        organic_col.metric(tr("Organic after import", "Organic после импорта"), f"{overall['organic']:,}")
+                    for warning in preview_warnings:
+                        st.warning(warning)
         except Exception as exc:
             st.error(str(exc))
     if st.button(tr("Save PR and recalculate", "Сохранить PR и пересчитать"), type="primary", use_container_width=True):
