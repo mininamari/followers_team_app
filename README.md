@@ -6,7 +6,8 @@ Streamlit application for calculating Instagram followers from Meta Business Sui
 
 - Team login with role-based access control.
 - Meta Business Suite CSV upload.
-- Novakid PR CSV upload with automatic account matching.
+- Novakid PR CSV/Excel upload with page mapping, import preview, and add-only mode.
+- Paid-only PR rows without a Meta publication match increase paid and total without reducing organic.
 - Final follower report with CSV and Excel export.
 - Manual PR follower overrides for authorized users.
 - Upload history for auditing.
@@ -57,6 +58,12 @@ On first startup, the app creates the first admin only from the environment vari
 | Viewer | Read-only access to dashboard, reports, exports, and upload history. |
 
 Existing databases are migrated automatically. Previous `admin` users remain admins, and previous non-admin users become managers.
+
+## Follower calculation
+
+PR `Название объявления` is matched to Meta `ID публикации` for the same account and reporting period. Matched rows split the Meta total into paid and organic. PR rows without a Meta match are kept as paid-only rows: they add the same value to paid and total, while existing organic stays unchanged. Every calculated row and monthly total therefore follows `total = paid + organic`.
+
+The PR upload page shows a preview before saving. In add-only mode, existing imported rows and manual corrections are left unchanged; only new account + publication ID pairs are inserted.
 
 ## Backups
 

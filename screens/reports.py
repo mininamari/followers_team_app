@@ -26,21 +26,28 @@ def page_report(user: dict) -> None:
     if f.empty:
         st.info(tr("No final data yet, or the filters returned nothing.", "Пока нет финальных данных или фильтры ничего не нашли."))
         return
+    f = f.copy()
+    f["match_type"] = f["meta_uploaded_by"].apply(
+        lambda value: tr("Paid-only", "Только paid")
+        if pd.isna(value) or value == ""
+        else tr("Meta matched", "Есть пара в Meta")
+    )
 
     monthly = db_df("SELECT * FROM monthly_follower_totals ORDER BY period_start DESC, account")
     monthly = monthly[monthly["account"].isin(f["account"].unique()) & monthly["month"].isin(f["month"].unique())].copy()
     st.markdown("### " + tr("Monthly follower totals", "Месячные итоги подписчиков"))
     st.caption(tr(
-        "This is the dashboard source of truth. Followers paid includes every PR row for the region, even when its post ID was not matched. Leave a manual field empty to use the imported value.",
-        "Это источник данных для Dashboard. Followers paid включает все PR-строки региона, даже без совпавшего ID поста. Пустое ручное поле использует импортированное значение.",
+        "This is the dashboard source of truth. Paid-only followers have no matching Meta publication: they increase paid and total while organic stays unchanged. Leave a manual field empty to use the imported value.",
+        "Это источник данных для Dashboard. Paid-only подписчики не имеют пары в Meta: они увеличивают paid и total, а organic остаётся без изменений. Пустое ручное поле использует импортированное значение.",
     ))
-    monthly_cols = ["account", "month", "imported_total_followers", "imported_paid_followers", "manual_total_followers", "manual_paid_followers", "total_followers", "paid_followers", "organic_followers", "period_start", "period_end"]
+    monthly_cols = ["account", "month", "imported_total_followers", "imported_paid_followers", "paid_only_followers", "manual_total_followers", "manual_paid_followers", "total_followers", "paid_followers", "organic_followers", "period_start", "period_end"]
     if has_permission(user, "edit_reports"):
         edited_monthly = st.data_editor(monthly[monthly_cols], use_container_width=True, hide_index=True,
             disabled=[c for c in monthly_cols if c not in ("manual_total_followers", "manual_paid_followers")],
             column_config={
                 "account": tr("Region", "Регион"), "month": tr("Month", "Месяц"),
                 "imported_total_followers": "Followers total — imported", "imported_paid_followers": "Followers paid — imported",
+                "paid_only_followers": "Followers paid-only",
                 "manual_total_followers": st.column_config.NumberColumn("Followers total — manual", min_value=0, step=1, format="%d"),
                 "manual_paid_followers": st.column_config.NumberColumn("Followers paid — manual", min_value=0, step=1, format="%d"),
                 "total_followers": "Followers total", "paid_followers": "Followers paid", "organic_followers": "Followers organic",
@@ -78,7 +85,7 @@ def page_report(user: dict) -> None:
             )
         )
         selection_cols = [
-            "Выбрать", "account", "publication_date", "publication_id", "publication_link",
+            "Выбрать", "match_type", "account", "publication_date", "publication_id", "publication_link",
             "post_reach", "meta_followers", "pr_followers", "final_followers", "warning", "period_start", "period_end",
         ]
         selection_data = f.copy()
@@ -93,6 +100,7 @@ def page_report(user: dict) -> None:
             disabled=[c for c in selection_cols if c != "Выбрать"],
             column_config={
                 "Выбрать": st.column_config.CheckboxColumn(tr("Select", "Выбрать"), help=tr("Add row to the manual input block", "Добавить строку в блок ручного ввода")),
+                "match_type": tr("Row type", "Тип строки"),
                 "account": tr("Account", "Аккаунт"),
                 "publication_date": tr("Publication date", "Дата публикации"),
                 "publication_id": tr("Publication ID", "ID публикации"),
@@ -117,7 +125,7 @@ def page_report(user: dict) -> None:
                 selected_keys = ["account", "period_start", "period_end", "publication_id"]
                 selected_source = f.merge(selected_rows[selected_keys], on=selected_keys, how="inner")
                 selected_editor_cols = [
-                    "account", "publication_date", "publication_id", "publication_link",
+                    "match_type", "account", "publication_date", "publication_id", "publication_link",
                     "post_reach", "meta_followers", "imported_pr_followers", "manual_pr_followers", "pr_followers",
                     "final_followers", "warning", "period_start", "period_end",
                 ]
@@ -128,6 +136,7 @@ def page_report(user: dict) -> None:
                     disabled=[c for c in selected_editor_cols if c != "manual_pr_followers"],
                     column_config={
                         "account": tr("Account", "Аккаунт"),
+                        "match_type": tr("Row type", "Тип строки"),
                         "publication_date": tr("Publication date", "Дата публикации"),
                         "publication_id": tr("Publication ID", "ID публикации"),
                         "publication_link": st.column_config.LinkColumn(tr("Link", "Ссылка")),
@@ -159,7 +168,7 @@ def page_report(user: dict) -> None:
 
     st.markdown("### " + tr("Final Report", "Финальный отчет"))
     display_cols = [
-        "account", "month", "publication_date", "publication_id", "publication_link",
+        "match_type", "account", "month", "publication_date", "publication_id", "publication_link",
         "post_reach", "meta_followers", "pr_followers", "final_followers", "spend_usd", "cpf_usd",
         "meta_uploaded_by", "pr_uploaded_by", "override_updated_by", "updated_at",
     ]
@@ -170,6 +179,7 @@ def page_report(user: dict) -> None:
         hide_index=True,
         column_config={
             "publication_link": st.column_config.LinkColumn(tr("Publication link", "Ссылка на публикацию")),
+            "match_type": tr("Row type", "Тип строки"),
             "account": tr("Account", "Аккаунт"),
             "month": tr("Month", "Месяц"),
             "publication_date": tr("Publication date", "Дата публикации"),
