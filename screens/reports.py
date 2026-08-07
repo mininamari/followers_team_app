@@ -68,15 +68,20 @@ def page_report(user: dict) -> None:
     total_spend = float(f["spend_usd"].sum())
     total_pr = int(f["pr_followers"].sum())
     cpf = total_spend / total_pr if total_pr > 0 else None
-    c1, c2, c3, c4 = st.columns(4)
+    metric_columns = st.columns(4 if user.get("role") == "admin" else 3)
+    c1, c2, c3 = metric_columns[:3]
     c1.metric("Rows", f"{len(f):,}")
     c2.metric("Followers organic", f"{total_followers:,}")
     c3.metric("Spend", f"${total_spend:,.2f}")
-    c4.metric("CPF", "—" if cpf is None else f"${cpf:,.2f}")
+    if user.get("role") == "admin":
+        metric_columns[3].metric("CPF", "—" if cpf is None else f"${cpf:,.2f}")
 
     if has_permission(user, "edit_reports"):
-        st.markdown("### " + tr("Manual Ad Account Follower Adjustment", "Ручное уточнение подписчиков из рекламного кабинета"))
-        st.caption(
+        adjustment = st.expander(
+            tr("Manual Ad Account Follower Adjustment", "Ручное уточнение подписчиков из рекламного кабинета"),
+            expanded=False,
+        )
+        adjustment.caption(
             tr(
                 "Select the rows you need first. They will appear in a separate block above where you can enter the actual PR follower count. "
                 "Rows with warnings are selected automatically. Clear the manual field and save the row to return to the CSV value.",
@@ -91,10 +96,10 @@ def page_report(user: dict) -> None:
         ]
         selection_data = f.copy()
         selection_data.insert(0, "Выбрать", selection_data["warning"].fillna("") != "")
-        selected_rows_container = st.container()
+        selected_rows_container = adjustment.container()
 
-        st.markdown("#### " + tr("All Rows", "Все строки"))
-        selected_rows = st.data_editor(
+        adjustment.markdown("#### " + tr("All Rows", "Все строки"))
+        selected_rows = adjustment.data_editor(
             selection_data[selection_cols],
             use_container_width=True,
             hide_index=True,
@@ -156,7 +161,7 @@ def page_report(user: dict) -> None:
                     },
                     key="followers_override_editor",
                 )
-                if st.button(tr("Save manual values and recalculate", "Сохранить ручные значения и пересчитать"), type="primary", use_container_width=True):
+                if adjustment.button(tr("Save manual values and recalculate", "Сохранить ручные значения и пересчитать"), type="primary", use_container_width=True):
                     try:
                         edited.insert(0, "Изменить", True)
                         changed = save_follower_overrides(edited, user)
