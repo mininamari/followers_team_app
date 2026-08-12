@@ -225,6 +225,8 @@ def page_facebook_ads(user: dict) -> None:
             status_text = (
                 tr("not synced yet", "ещё не синхронизировано") if not last_sync else f"{last_sync['status']} — {last_sync['started_at']}"
             )
+            if last_sync and last_sync.get("triggered_by"):
+                status_text += f" — {tr('started by', 'запустил(а)')}: {last_sync['triggered_by']}"
             col1.write(f"**{row['label'] or row['account_id']}** ({row['account_id']}) — {status_text}")
             if col2.button(
                 "Sync now",
@@ -233,9 +235,11 @@ def page_facebook_ads(user: dict) -> None:
                 use_container_width=True,
             ):
                 with st.spinner(tr("Syncing...", "Синхронизация...")):
-                    result = sync_ad_account(row["account_id"])
+                    result = sync_ad_account(row["account_id"], triggered_by=user["username"])
                 if result.status == "ok":
                     st.success(result.message)
+                elif result.status == "skipped":
+                    st.warning(result.message)
                 else:
                     st.error(result.message)
                 st.rerun()
