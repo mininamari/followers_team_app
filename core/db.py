@@ -257,7 +257,16 @@ def init_db() -> None:
                 started_at TEXT NOT NULL,
                 finished_at TEXT,
                 status TEXT NOT NULL,
-                message TEXT
+                message TEXT,
+                triggered_by TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fb_sync_locks (
+                account_id TEXT PRIMARY KEY,
+                acquired_at TEXT NOT NULL
             )
             """
         )
@@ -467,6 +476,10 @@ def ensure_schema_columns(conn) -> None:
     creative_cols = _table_columns(conn, "fb_creatives")
     if "tags" not in creative_cols:
         conn.execute("ALTER TABLE fb_creatives ADD COLUMN tags TEXT")
+
+    sync_log_cols = _table_columns(conn, "fb_sync_log")
+    if "triggered_by" not in sync_log_cols:
+        conn.execute("ALTER TABLE fb_sync_log ADD COLUMN triggered_by TEXT")
     conn.commit()
 
 

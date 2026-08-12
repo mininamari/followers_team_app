@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from core.config import now_utc
@@ -15,6 +15,8 @@ from integrations.facebook_ads_client import (
 )
 
 INSIGHTS_LOOKBACK_DAYS = 30
+SYNC_COOLDOWN_MINUTES = 5
+SYNC_LOCK_STALE_MINUTES = 30
 
 
 @dataclass
@@ -28,10 +30,56 @@ class SyncResult:
     message: str = ""
 
 
-def _log_start(conn, account_id: str) -> int:
+def _parse_utc(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def _acquire_sync_lock(conn, account_id: str) -> tuple[bool, str]:
+    """Atomically acquire an account lock and enforce a short sync cooldown."""
+    now = datetime.utcnow()
+    stale_before = (now - timedelta(minutes=SYNC_LOCK_STALE_MINUTES)).isoformat(timespec="seconds") + "Z"
+    conn.execute("DELETE FROM fb_sync_locks WHERE acquired_at < ?", (stale_before,))
     cur = conn.execute(
-        "INSERT INTO fb_sync_log(account_id, started_at, status) VALUES(?,?,?) RETURNING id",
-        (account_id, now_utc(), "running"),
+        """
+        INSERT INTO fb_sync_locks(account_id, acquired_at) VALUES(?,?)
+        ON CONFLICT(account_id) DO NOTHING
+        RETURNING account_id
+        """,
+        (account_id, now_utc()),
+    )
+    if cur.fetchone() is None:
+        conn.commit()
+        return False, "Synchronization for this ad account is already running."
+
+    last = conn.execute(
+        """
+        SELECT finished_at FROM fb_sync_log
+        WHERE account_id=? AND status='ok' AND finished_at IS NOT NULL
+        ORDER BY finished_at DESC LIMIT 1
+        """,
+        (account_id,),
+    ).fetchone()
+    if last:
+        elapsed = now - _parse_utc(last[0])
+        if elapsed < timedelta(minutes=SYNC_COOLDOWN_MINUTES):
+            remaining = max(1, int((timedelta(minutes=SYNC_COOLDOWN_MINUTES) - elapsed).total_seconds()) + 1)
+            conn.execute("DELETE FROM fb_sync_locks WHERE account_id=?", (account_id,))
+            conn.commit()
+            return False, f"Please wait {remaining} seconds before syncing this ad account again."
+    conn.commit()
+    return True, ""
+
+
+def _release_sync_lock(account_id: str) -> None:
+    with connect_db() as conn:
+        conn.execute("DELETE FROM fb_sync_locks WHERE account_id=?", (account_id,))
+        conn.commit()
+
+
+def _log_start(conn, account_id: str, triggered_by: str) -> int:
+    cur = conn.execute(
+        "INSERT INTO fb_sync_log(account_id, started_at, status, triggered_by) VALUES(?,?,?,?) RETURNING id",
+        (account_id, now_utc(), "running", triggered_by),
     )
     log_id = int(cur.fetchone()[0])
     conn.commit()
@@ -46,10 +94,15 @@ def _log_finish(conn, log_id: int, status: str, message: str) -> None:
     conn.commit()
 
 
-def sync_ad_account(account_id: str) -> SyncResult:
+def sync_ad_account(account_id: str, triggered_by: str = "system") -> SyncResult:
     result = SyncResult(account_id=account_id)
     with connect_db() as conn:
-        log_id = _log_start(conn, account_id)
+        acquired, reason = _acquire_sync_lock(conn, account_id)
+        if not acquired:
+            result.status = "skipped"
+            result.message = reason
+            return result
+        log_id = _log_start(conn, account_id, triggered_by)
         try:
             updated_at = now_utc()
 
@@ -157,6 +210,8 @@ def sync_ad_account(account_id: str) -> SyncResult:
             result.status = "error"
             result.message = f"Unexpected error: {exc}"
             _log_finish(conn, log_id, "error", result.message)
+        finally:
+            _release_sync_lock(account_id)
     return result
 
 
@@ -166,14 +221,14 @@ def sync_all_active_accounts() -> list[SyncResult]:
             row[0]
             for row in conn.execute("SELECT account_id FROM fb_ad_accounts WHERE is_active=1").fetchall()
         ]
-    return [sync_ad_account(account_id) for account_id in account_ids]
+    return [sync_ad_account(account_id, triggered_by="system") for account_id in account_ids]
 
 
 def last_sync_for_account(account_id: str) -> Optional[dict]:
     with connect_db() as conn:
         row = conn.execute(
             """
-            SELECT started_at, finished_at, status, message
+            SELECT started_at, finished_at, status, message, triggered_by
             FROM fb_sync_log
             WHERE account_id=?
             ORDER BY started_at DESC

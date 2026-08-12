@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
@@ -45,13 +46,21 @@ def is_configured() -> bool:
 def _get(path: str, params: Optional[dict] = None) -> dict:
     token = _access_token()
     url = path if path.startswith("http") else f"{GRAPH_API_BASE}/{path.lstrip('/')}"
+    # Meta pagination links may echo access_token in their query string. Strip
+    # it before issuing the next request so credentials never travel in a URL.
+    if path.startswith("http"):
+        parts = urlsplit(url)
+        safe_query = urlencode([(key, value) for key, value in parse_qsl(parts.query) if key != "access_token"])
+        url = urlunsplit((parts.scheme, parts.netloc, parts.path, safe_query, parts.fragment))
     query = dict(params or {})
-    query["access_token"] = token
+    # Keep credentials out of URLs, which are commonly captured by proxies,
+    # access logs, monitoring tools, and exception reports.
+    headers = {"Authorization": f"Bearer {token}"}
 
     backoff = INITIAL_BACKOFF_SECONDS
     last_error: Optional[dict] = None
     for attempt in range(MAX_RETRIES):
-        response = requests.get(url, params=query, timeout=30)
+        response = requests.get(url, params=query, headers=headers, timeout=30)
         try:
             payload = response.json()
         except ValueError:
