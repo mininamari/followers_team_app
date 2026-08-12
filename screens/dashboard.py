@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from html.parser import HTMLParser
+from typing import Optional
+from urllib.parse import urljoin, urlparse
+
+import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
 from core.auth import has_permission
@@ -8,6 +14,111 @@ from core.db import db_df
 from core.i18n import tr
 from core.style import MARK_COLORS, hero
 from screens._shared import apply_date_filter, shared_results_filters
+
+INSTAGRAM_PAGE_HOSTS = ("instagram.com",)
+INSTAGRAM_IMAGE_HOSTS = ("instagram.com", "cdninstagram.com", "fbcdn.net")
+MAX_PAGE_BYTES = 1_000_000
+MAX_PREVIEW_BYTES = 8_000_000
+
+
+class _OpenGraphImageParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.image_url: Optional[str] = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        if tag.lower() != "meta" or self.image_url:
+            return
+        values = {str(key).lower(): value for key, value in attrs}
+        if values.get("property", "").lower() in {"og:image", "og:image:secure_url"}:
+            self.image_url = values.get("content")
+
+
+def _is_allowed_host(url: str, allowed_suffixes: tuple[str, ...]) -> bool:
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        return parsed.scheme == "https" and any(
+            host == suffix or host.endswith(f".{suffix}") for suffix in allowed_suffixes
+        )
+    except ValueError:
+        return False
+
+
+def _extract_og_image_url(html: str) -> Optional[str]:
+    parser = _OpenGraphImageParser()
+    parser.feed(html)
+    return parser.image_url
+
+
+def _read_limited(response: requests.Response, maximum_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    size = 0
+    for chunk in response.iter_content(chunk_size=65_536):
+        size += len(chunk)
+        if size > maximum_bytes:
+            raise ValueError("Response is too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _safe_get(url: str, allowed_suffixes: tuple[str, ...], **kwargs) -> requests.Response:
+    """Follow only HTTPS redirects that stay on explicitly allowed hosts."""
+    current_url = url
+    for _ in range(4):
+        if not _is_allowed_host(current_url, allowed_suffixes):
+            raise ValueError("Disallowed preview host")
+        response = requests.get(current_url, allow_redirects=False, **kwargs)
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            return response
+        location = response.headers.get("Location")
+        response.close()
+        if not location:
+            raise ValueError("Redirect has no destination")
+        current_url = urljoin(current_url, location)
+    raise ValueError("Too many redirects")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_instagram_preview(publication_url: str) -> Optional[tuple[bytes, str]]:
+    """Best-effort public preview fetch; failure never blocks the dashboard."""
+    if not _is_allowed_host(publication_url, INSTAGRAM_PAGE_HOSTS):
+        return None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; MARK01Preview/1.0)",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    try:
+        page = _safe_get(
+            publication_url, INSTAGRAM_PAGE_HOSTS, headers=headers, timeout=(3, 8), stream=True
+        )
+        page.raise_for_status()
+        if not _is_allowed_host(page.url, INSTAGRAM_PAGE_HOSTS):
+            return None
+        page_type = page.headers.get("Content-Type", "").lower()
+        if "text/html" not in page_type:
+            return None
+        page_html = _read_limited(page, MAX_PAGE_BYTES).decode(page.encoding or "utf-8", errors="replace")
+        image_url = _extract_og_image_url(page_html)
+        if not image_url or not _is_allowed_host(image_url, INSTAGRAM_IMAGE_HOSTS):
+            return None
+
+        image = _safe_get(
+            image_url,
+            INSTAGRAM_IMAGE_HOSTS,
+            headers={"User-Agent": headers["User-Agent"]},
+            timeout=(3, 10),
+            stream=True,
+        )
+        image.raise_for_status()
+        if not _is_allowed_host(image.url, INSTAGRAM_IMAGE_HOSTS):
+            return None
+        image_type = image.headers.get("Content-Type", "").split(";", 1)[0].lower()
+        if image_type not in {"image/jpeg", "image/png", "image/webp"}:
+            return None
+        return _read_limited(image, MAX_PREVIEW_BYTES), image_type
+    except (requests.RequestException, UnicodeError, ValueError):
+        return None
 
 
 def _chart_layout(fig, y_title: str) -> None:
@@ -17,6 +128,83 @@ def _chart_layout(fig, y_title: str) -> None:
         xaxis_title="", yaxis_title=y_title, bargap=0.25,
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     )
+
+
+def _top_organic_publications(
+    publications: pd.DataFrame,
+    selected_accounts: list[str],
+    selected_periods: list[str],
+    limit: int = 5,
+) -> pd.DataFrame:
+    """Return unique linked Meta publications ranked within dashboard filters."""
+    if publications.empty or not selected_accounts or not selected_periods:
+        return publications.iloc[0:0]
+
+    ranked = publications[
+        publications["account"].isin(selected_accounts)
+        & publications["month"].astype(str).str[:7].isin(selected_periods)
+    ].copy()
+    ranked = ranked[
+        ranked["publication_link"].fillna("").astype(str).str.strip().ne("")
+        & ranked["meta_uploaded_by"].notna()
+        & ranked["final_followers"].fillna(0).gt(0)
+    ]
+    if ranked.empty:
+        return ranked
+
+    # A publication may occur in overlapping report uploads. Keep its newest
+    # calculated row so it cannot occupy more than one place in the top five.
+    ranked = (
+        ranked.sort_values(["period_end", "updated_at"], na_position="first")
+        .drop_duplicates(["account", "publication_id"], keep="last")
+        .sort_values(
+            ["final_followers", "post_reach", "publication_date"],
+            ascending=[False, False, False],
+            na_position="last",
+        )
+    )
+    return ranked.head(limit)
+
+
+def _render_top_publications(top_publications: pd.DataFrame) -> None:
+    st.markdown("### " + tr("Top 5 organic publications", "Топ-5 органических публикаций"))
+    st.caption(
+        tr(
+            "The ranking follows the selected regions and months. Public previews are loaded when Instagram makes them available.",
+            "Рейтинг меняется вместе с выбранными регионами и месяцами. Публичные превью загружаются, если Instagram их отдаёт.",
+        )
+    )
+    if top_publications.empty:
+        st.info(tr("No linked publications with organic followers in this selection.", "В выбранном периоде нет публикаций с органическими подписчиками и ссылкой."))
+        return
+
+    columns = st.columns(len(top_publications))
+    for rank, ((_, publication), column) in enumerate(zip(top_publications.iterrows(), columns), start=1):
+        with column:
+            with st.container(border=True):
+                st.markdown(f"#### #{rank} · {int(publication['final_followers']):,}")
+                st.caption("Followers organic")
+                preview = _load_instagram_preview(str(publication["publication_link"]))
+                if preview:
+                    preview_bytes, _ = preview
+                    st.image(preview_bytes, use_container_width=True)
+                else:
+                    st.markdown("📷  \n" + tr("Preview unavailable", "Превью недоступно"))
+                st.write(f"**{publication['account']}**")
+                publication_date = publication.get("publication_date")
+                published = str(publication_date)[:10] if pd.notna(publication_date) else ""
+                if published:
+                    st.caption(published)
+                st.caption(
+                    f"Total: {int(publication['meta_followers']):,} · "
+                    f"Paid: {int(publication['pr_followers']):,} · "
+                    f"Reach: {int(publication['post_reach']):,}"
+                )
+                st.link_button(
+                    tr("Open publication", "Открыть публикацию"),
+                    str(publication["publication_link"]),
+                    use_container_width=True,
+                )
 
 
 def page_dashboard() -> None:
@@ -91,6 +279,10 @@ def page_dashboard() -> None:
             fig = px.bar(by_region, x="account", y="organic_followers", title=tr("Organic by region", "Organic по регионам"))
             _chart_layout(fig, "Followers organic")
             st.plotly_chart(fig, use_container_width=True)
+
+        publications = db_df("SELECT * FROM final_results ORDER BY period_end DESC, updated_at DESC")
+        top_publications = _top_organic_publications(publications, selected_accounts, selected_periods)
+        _render_top_publications(top_publications)
 
         st.markdown("### " + tr("Monthly regional overview", "Месячный обзор по регионам"))
         overview = f[["month", "account", "organic_followers", "total_followers"]].copy()
