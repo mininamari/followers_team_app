@@ -77,9 +77,11 @@ def page_report(user: dict) -> None:
         metric_columns[3].metric("CPF", "—" if cpf is None else f"${cpf:,.2f}")
 
     if has_permission(user, "edit_reports"):
+        selector_state = st.session_state.get("followers_override_selector", {})
+        keep_adjustment_open = isinstance(selector_state, dict) and bool(selector_state.get("edited_rows"))
         adjustment = st.expander(
             tr("Manual Ad Account Follower Adjustment", "Ручное уточнение подписчиков из рекламного кабинета"),
-            expanded=False,
+            expanded=keep_adjustment_open,
         )
         adjustment.caption(
             tr(
@@ -94,7 +96,9 @@ def page_report(user: dict) -> None:
             "Выбрать", "match_type", "account", "publication_date", "publication_id", "publication_link",
             "post_reach", "meta_followers", "pr_followers", "final_followers", "warning", "period_start", "period_end",
         ]
-        selection_data = f.copy()
+        # A stable positional index keeps data_editor checkbox edits attached to
+        # the same rows across Streamlit reruns.
+        selection_data = f.reset_index(drop=True).copy()
         selection_data.insert(0, "Выбрать", selection_data["warning"].fillna("") != "")
         selected_rows_container = adjustment.container()
 
