@@ -25,18 +25,32 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         self.assertNotIn("access_token", kwargs["params"])
         self.assertEqual(kwargs["headers"], {"Authorization": "Bearer top-secret"})
 
-    @patch.object(client, "_get")
-    def test_only_selected_ads_and_creatives_are_requested(self, get: Mock) -> None:
-        get.return_value = {}
+    @patch.object(client, "_batch_get")
+    def test_only_selected_ads_and_creatives_are_requested(self, batch_get: Mock) -> None:
+        batch_get.return_value = []
 
         client.get_ads_by_ids(["101", "102"])
 
-        path, params = get.call_args.args
-        self.assertEqual(path, "")
-        self.assertEqual(params["ids"], "101,102")
-        self.assertIn("campaign{id", params["fields"])
-        self.assertIn("creative{id", params["fields"])
-        self.assertIn("instagram_user_id", params["fields"])
+        paths = batch_get.call_args.args[0]
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(paths[0].startswith("101?fields="))
+        self.assertNotIn("ids=", paths[0])
+        self.assertIn("campaign%7B", paths[0])
+        self.assertIn("instagram_user_id", paths[0])
+
+    @patch.dict(os.environ, {"META_ACCESS_TOKEN": "top-secret"})
+    @patch.object(client.requests, "post")
+    def test_batch_requests_use_authorization_header(self, request_post: Mock) -> None:
+        response = Mock(ok=True)
+        response.json.return_value = [{"code": 200, "body": '{"id":"101"}'}]
+        request_post.return_value = response
+
+        result = client._batch_get(["101?fields=id"])
+
+        _, kwargs = request_post.call_args
+        self.assertEqual(kwargs["headers"], {"Authorization": "Bearer top-secret"})
+        self.assertNotIn("access_token", kwargs["data"])
+        self.assertEqual(result, [{"id": "101"}])
 
     @patch.object(client, "_get_all_pages")
     def test_insights_are_chunked_and_overloaded_windows_are_split(self, get_all_pages: Mock) -> None:
@@ -56,15 +70,15 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         self.assertIn('{"since":"2026-09-01","until":"2026-09-04"}', requested_ranges)
         self.assertIn('{"since":"2026-09-08","until":"2026-09-10"}', requested_ranges)
 
-    @patch.object(client, "_get")
-    def test_overloaded_ad_detail_batch_is_split(self, get: Mock) -> None:
-        def fake_get(_path, params):
-            ids = params["ids"].split(",")
-            if len(ids) > 1:
+    @patch.object(client, "_batch_get")
+    def test_overloaded_ad_detail_batch_is_split(self, batch_get: Mock) -> None:
+        def fake_batch_get(paths):
+            if len(paths) > 1:
                 raise client.FacebookApiError("reduce data", code=1)
-            return {ids[0]: {"id": ids[0]}}
+            ad_id = paths[0].split("?", 1)[0]
+            return [{"id": ad_id}]
 
-        get.side_effect = fake_get
+        batch_get.side_effect = fake_batch_get
 
         rows = client.get_ads_by_ids(["101", "102"])
 
