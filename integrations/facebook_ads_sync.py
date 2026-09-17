@@ -8,7 +8,6 @@ from core.config import now_utc
 from core.database import connect_db
 from integrations.facebook_ads_client import (
     FacebookApiError,
-    get_ad_creative,
     get_ads,
     get_campaigns,
     get_insights,
@@ -127,28 +126,26 @@ def sync_ad_account(account_id: str, triggered_by: str = "system") -> SyncResult
                 )
             result.campaigns = len(campaigns)
 
-            all_ad_ids: list[str] = []
-            for campaign in campaigns:
-                ads = get_ads(campaign["id"])
-                for ad in ads:
-                    conn.execute(
-                        """
-                        INSERT INTO fb_ads(ad_id, campaign_id, adset_id, name, status, updated_at)
-                        VALUES(?,?,?,?,?,?)
-                        ON CONFLICT(ad_id) DO UPDATE SET
-                            campaign_id=excluded.campaign_id,
-                            adset_id=excluded.adset_id,
-                            name=excluded.name,
-                            status=excluded.status,
-                            updated_at=excluded.updated_at
-                        """,
-                        (ad["id"], campaign["id"], ad.get("adset_id"), ad.get("name"), ad.get("status"), updated_at),
-                    )
-                    all_ad_ids.append(ad["id"])
-            result.ads = len(all_ad_ids)
+            ads = get_ads(account_id)
+            for ad in ads:
+                campaign_id = ad.get("campaign_id")
+                if not campaign_id:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO fb_ads(ad_id, campaign_id, adset_id, name, status, updated_at)
+                    VALUES(?,?,?,?,?,?)
+                    ON CONFLICT(ad_id) DO UPDATE SET
+                        campaign_id=excluded.campaign_id,
+                        adset_id=excluded.adset_id,
+                        name=excluded.name,
+                        status=excluded.status,
+                        updated_at=excluded.updated_at
+                    """,
+                    (ad["id"], campaign_id, ad.get("adset_id"), ad.get("name"), ad.get("status"), updated_at),
+                )
 
-            for ad_id in all_ad_ids:
-                creative = get_ad_creative(ad_id)
+                creative = ad.get("creative")
                 if not creative:
                     continue
                 conn.execute(
@@ -165,11 +162,12 @@ def sync_ad_account(account_id: str, triggered_by: str = "system") -> SyncResult
                         updated_at=excluded.updated_at
                     """,
                     (
-                        creative["id"], ad_id, creative.get("title"), creative.get("body"),
+                        creative["id"], ad["id"], creative.get("title"), creative.get("body"),
                         creative.get("image_url"), creative.get("thumbnail_url"), creative.get("video_id"), updated_at,
                     ),
                 )
                 result.creatives += 1
+            result.ads = len(ads)
 
             until = date.today()
             since = until - timedelta(days=INSIGHTS_LOOKBACK_DAYS)

@@ -18,18 +18,17 @@ FATIGUE_DECLINE_RATIO = 0.7
 MIN_ROWS_FOR_PERFORMANCE_FLAG = 4
 
 
-def _save_account_mapping(account_id: str, label: str, novakid_account: str, is_active: bool) -> None:
+def _save_ad_account(account_id: str, label: str, is_active: bool) -> None:
     with connect_db() as conn:
         conn.execute(
             """
             INSERT INTO fb_ad_accounts(account_id, label, novakid_account, is_active, created_at)
-            VALUES(?,?,?,?,?)
+            VALUES(?,?,NULL,?,?)
             ON CONFLICT(account_id) DO UPDATE SET
                 label=excluded.label,
-                novakid_account=excluded.novakid_account,
                 is_active=excluded.is_active
             """,
-            (account_id, label, novakid_account, int(is_active), now_utc()),
+            (account_id, label, int(is_active), now_utc()),
         )
         conn.commit()
 
@@ -208,19 +207,27 @@ def page_facebook_ads(user: dict) -> None:
         with st.expander(tr("Facebook Ad Accounts", "Рекламные аккаунты Facebook"), expanded=False):
             accounts_df = db_df("SELECT * FROM fb_ad_accounts ORDER BY label")
             if not accounts_df.empty:
-                st.dataframe(accounts_df, use_container_width=True, hide_index=True)
+                st.dataframe(
+                    accounts_df[["account_id", "label", "is_active", "created_at"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
             with st.form("fb_account_mapping"):
-                st.caption(tr("Add a Facebook ad account and map it to a Novakid region.", "Добавьте рекламный аккаунт Facebook и свяжите его с регионом Novakid."))
+                st.caption(
+                    tr(
+                        "Add the Meta ad account once. Ads for all Instagram accounts inside it will be synchronized together.",
+                        "Добавьте рекламный кабинет Meta один раз. Объявления всех Instagram-аккаунтов внутри него синхронизируются вместе.",
+                    )
+                )
                 account_id = st.text_input(tr("Ad account ID", "ID рекламного аккаунта"), placeholder="act_1234567890")
-                label = st.text_input(tr("Label", "Название"), placeholder="Israel")
-                novakid_account = st.text_input(tr("Novakid account", "Аккаунт Novakid"), placeholder="novakid_israel")
+                label = st.text_input(tr("Label", "Название"), placeholder=tr("Main Meta ad account", "Основной кабинет Meta"))
                 is_active = st.checkbox(tr("Active", "Активен"), value=True)
                 submitted = st.form_submit_button(tr("Save", "Сохранить"), use_container_width=True)
             if submitted:
                 if not account_id.strip().startswith("act_"):
                     st.error(tr("Ad account ID must start with act_.", "ID рекламного аккаунта должен начинаться с act_."))
                 else:
-                    _save_account_mapping(account_id.strip(), label.strip(), novakid_account.strip(), is_active)
+                    _save_ad_account(account_id.strip(), label.strip(), is_active)
                     st.success(tr("Saved.", "Сохранено."))
                     st.rerun()
 
