@@ -24,6 +24,17 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         self.assertNotIn("access_token", kwargs["params"])
         self.assertEqual(kwargs["headers"], {"Authorization": "Bearer top-secret"})
 
+    @patch.object(client, "_get_all_pages")
+    def test_ads_and_creatives_are_requested_in_one_account_query(self, get_all_pages: Mock) -> None:
+        get_all_pages.return_value = []
+
+        client.get_ads("act_123")
+
+        path, params = get_all_pages.call_args.args
+        self.assertEqual(path, "act_123/ads")
+        self.assertIn("campaign_id", params["fields"])
+        self.assertIn("creative{id", params["fields"])
+
     def test_account_lock_is_atomic_and_audit_records_user(self) -> None:
         conn = sqlite3.connect(":memory:")
         conn.execute("CREATE TABLE fb_sync_locks(account_id TEXT PRIMARY KEY, acquired_at TEXT NOT NULL)")

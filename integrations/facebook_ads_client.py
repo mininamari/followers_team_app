@@ -103,19 +103,17 @@ def get_campaigns(account_id: str) -> list[dict]:
     )
 
 
-def get_ads(campaign_id: str) -> list[dict]:
+def get_ads(account_id: str) -> list[dict]:
+    """Fetch all ads and their creative metadata in one paginated account query."""
     return _get_all_pages(
-        f"{campaign_id}/ads",
-        {"fields": "id,name,status,adset_id"},
+        f"{account_id}/ads",
+        {
+            "fields": (
+                "id,name,status,adset_id,campaign_id,"
+                "creative{id,title,body,image_url,thumbnail_url,video_id}"
+            )
+        },
     )
-
-
-def get_ad_creative(ad_id: str) -> Optional[dict]:
-    payload = _get(
-        ad_id,
-        {"fields": "creative{id,title,body,image_url,thumbnail_url,video_id}"},
-    )
-    return payload.get("creative")
 
 
 def get_insights(account_id: str, since: str, until: str) -> list[dict]:
