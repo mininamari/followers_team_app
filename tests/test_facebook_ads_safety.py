@@ -38,6 +38,38 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         self.assertIn("creative{id", params["fields"])
         self.assertIn("instagram_user_id", params["fields"])
 
+    @patch.object(client, "_get_all_pages")
+    def test_insights_are_chunked_and_overloaded_windows_are_split(self, get_all_pages: Mock) -> None:
+        def fake_get_all_pages(_path, params):
+            time_range = params["time_range"]
+            if '"since":"2026-09-01"' in time_range and '"until":"2026-09-07"' in time_range:
+                raise client.FacebookApiError("reduce data", code=1)
+            return [{"ad_id": time_range}]
+
+        get_all_pages.side_effect = fake_get_all_pages
+
+        rows = client.get_insights("act_123", "2026-09-01", "2026-09-10")
+
+        self.assertEqual(len(rows), 3)
+        requested_ranges = [call.args[1]["time_range"] for call in get_all_pages.call_args_list]
+        self.assertIn('{"since":"2026-09-01","until":"2026-09-07"}', requested_ranges)
+        self.assertIn('{"since":"2026-09-01","until":"2026-09-04"}', requested_ranges)
+        self.assertIn('{"since":"2026-09-08","until":"2026-09-10"}', requested_ranges)
+
+    @patch.object(client, "_get")
+    def test_overloaded_ad_detail_batch_is_split(self, get: Mock) -> None:
+        def fake_get(_path, params):
+            ids = params["ids"].split(",")
+            if len(ids) > 1:
+                raise client.FacebookApiError("reduce data", code=1)
+            return {ids[0]: {"id": ids[0]}}
+
+        get.side_effect = fake_get
+
+        rows = client.get_ads_by_ids(["101", "102"])
+
+        self.assertEqual([row["id"] for row in rows], ["101", "102"])
+
     def test_account_lock_is_atomic_and_audit_records_user(self) -> None:
         conn = sqlite3.connect(":memory:")
         conn.execute("CREATE TABLE fb_sync_locks(account_id TEXT PRIMARY KEY, acquired_at TEXT NOT NULL)")

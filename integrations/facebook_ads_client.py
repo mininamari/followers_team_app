@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import date, timedelta
 from itertools import islice
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -21,6 +22,10 @@ INITIAL_BACKOFF_SECONDS = 2.0
 
 class FacebookApiError(Exception):
     """Raised with the actual Graph API error message so the UI can show it."""
+
+    def __init__(self, message: str, code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class FacebookApiNotConfigured(FacebookApiError):
@@ -79,10 +84,13 @@ def _get(path: str, params: Optional[dict] = None) -> dict:
             backoff *= 2
             continue
         message = error.get("message", "Unknown Facebook API error")
-        raise FacebookApiError(f"Facebook API error ({code}): {message}")
+        raise FacebookApiError(f"Facebook API error ({code}): {message}", code=code)
 
     message = (last_error or {}).get("message", "Rate limited")
-    raise FacebookApiError(f"Facebook API rate limit exceeded after {MAX_RETRIES} retries: {message}")
+    raise FacebookApiError(
+        f"Facebook API rate limit exceeded after {MAX_RETRIES} retries: {message}",
+        code=(last_error or {}).get("code"),
+    )
 
 
 def _get_all_pages(path: str, params: Optional[dict] = None) -> list[dict]:
@@ -100,20 +108,32 @@ def _get_all_pages(path: str, params: Optional[dict] = None) -> list[dict]:
 def get_ads_by_ids(ad_ids: list[str], chunk_size: int = 50) -> list[dict]:
     """Fetch details only for ads that produced insights in the selected period."""
     results: list[dict] = []
+
+    def fetch_chunk(chunk: list[str]) -> None:
+        try:
+            payload = _get(
+                "",
+                {
+                    "ids": ",".join(chunk),
+                    "fields": (
+                        "id,name,status,adset_id,"
+                        "campaign{id,name,objective,status,created_time},"
+                        "creative{id,title,body,image_url,thumbnail_url,video_id,instagram_user_id}"
+                    ),
+                },
+            )
+        except FacebookApiError as exc:
+            if exc.code != 1 or len(chunk) == 1:
+                raise
+            midpoint = len(chunk) // 2
+            fetch_chunk(chunk[:midpoint])
+            fetch_chunk(chunk[midpoint:])
+            return
+        results.extend(value for value in payload.values() if isinstance(value, dict) and value.get("id"))
+
     iterator = iter(dict.fromkeys(ad_ids))
     while chunk := list(islice(iterator, chunk_size)):
-        payload = _get(
-            "",
-            {
-                "ids": ",".join(chunk),
-                "fields": (
-                    "id,name,status,adset_id,"
-                    "campaign{id,name,objective,status,created_time},"
-                    "creative{id,title,body,image_url,thumbnail_url,video_id,instagram_user_id}"
-                ),
-            },
-        )
-        results.extend(value for value in payload.values() if isinstance(value, dict) and value.get("id"))
+        fetch_chunk(chunk)
     return results
 
 
@@ -122,16 +142,39 @@ def get_instagram_accounts(account_id: str) -> list[dict]:
     return payload.get("instagram_accounts", {}).get("data", [])
 
 
-def get_insights(account_id: str, since: str, until: str) -> list[dict]:
+def _get_insights_window(account_id: str, since: date, until: date) -> list[dict]:
     return _get_all_pages(
         f"{account_id}/insights",
         {
             "level": "ad",
-            "fields": (
-                "campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,"
-                "date_start,date_stop,spend,impressions,reach,clicks"
-            ),
-            "time_range": f'{{"since":"{since}","until":"{until}"}}',
+            "fields": "ad_id,date_start,date_stop,spend,impressions,reach,clicks",
+            "time_range": f'{{"since":"{since.isoformat()}","until":"{until.isoformat()}"}}',
             "time_increment": 1,
         },
     )
+
+
+def _get_insights_resilient(account_id: str, since: date, until: date) -> list[dict]:
+    try:
+        return _get_insights_window(account_id, since, until)
+    except FacebookApiError as exc:
+        if exc.code != 1 or since == until:
+            raise
+        midpoint = since + timedelta(days=(until - since).days // 2)
+        return [
+            *_get_insights_resilient(account_id, since, midpoint),
+            *_get_insights_resilient(account_id, midpoint + timedelta(days=1), until),
+        ]
+
+
+def get_insights(account_id: str, since: str, until: str, window_days: int = 7) -> list[dict]:
+    """Fetch daily insights in small windows and split overloaded requests further."""
+    start = date.fromisoformat(since)
+    end = date.fromisoformat(until)
+    results: list[dict] = []
+    window_start = start
+    while window_start <= end:
+        window_end = min(window_start + timedelta(days=window_days - 1), end)
+        results.extend(_get_insights_resilient(account_id, window_start, window_end))
+        window_start = window_end + timedelta(days=1)
+    return results
