@@ -6,14 +6,9 @@ from typing import Optional
 
 from core.config import now_utc
 from core.database import connect_db
-from integrations.facebook_ads_client import (
-    FacebookApiError,
-    get_ads,
-    get_campaigns,
-    get_insights,
-)
+from integrations.facebook_ads_client import FacebookApiError, get_ads_by_ids, get_insights, get_instagram_accounts
 
-INSIGHTS_LOOKBACK_DAYS = 30
+MAX_SYNC_DAYS = 90
 SYNC_COOLDOWN_MINUTES = 5
 SYNC_LOCK_STALE_MINUTES = 30
 
@@ -75,10 +70,12 @@ def _release_sync_lock(account_id: str) -> None:
         conn.commit()
 
 
-def _log_start(conn, account_id: str, triggered_by: str) -> int:
+def _log_start(conn, account_id: str, triggered_by: str, since: date, until: date) -> int:
     cur = conn.execute(
-        "INSERT INTO fb_sync_log(account_id, started_at, status, triggered_by) VALUES(?,?,?,?) RETURNING id",
-        (account_id, now_utc(), "running", triggered_by),
+        """INSERT INTO fb_sync_log(
+               account_id, started_at, status, triggered_by, period_start, period_end
+           ) VALUES(?,?,?,?,?,?) RETURNING id""",
+        (account_id, now_utc(), "running", triggered_by, since.isoformat(), until.isoformat()),
     )
     log_id = int(cur.fetchone()[0])
     conn.commit()
@@ -93,19 +90,34 @@ def _log_finish(conn, log_id: int, status: str, message: str) -> None:
     conn.commit()
 
 
-def sync_ad_account(account_id: str, triggered_by: str = "system") -> SyncResult:
+def sync_ad_account(account_id: str, since: date, until: date, triggered_by: str = "system") -> SyncResult:
     result = SyncResult(account_id=account_id)
+    if since > until:
+        result.status = "error"
+        result.message = "The period start must not be later than its end."
+        return result
+    if (until - since).days + 1 > MAX_SYNC_DAYS:
+        result.status = "error"
+        result.message = f"Select a period of no more than {MAX_SYNC_DAYS} days."
+        return result
     with connect_db() as conn:
         acquired, reason = _acquire_sync_lock(conn, account_id)
         if not acquired:
             result.status = "skipped"
             result.message = reason
             return result
-        log_id = _log_start(conn, account_id, triggered_by)
+        log_id = _log_start(conn, account_id, triggered_by, since, until)
         try:
             updated_at = now_utc()
 
-            campaigns = get_campaigns(account_id)
+            insights = get_insights(account_id, since.isoformat(), until.isoformat())
+            ads = get_ads_by_ids([row["ad_id"] for row in insights if row.get("ad_id")])
+            campaigns_by_id = {
+                ad["campaign"]["id"]: ad["campaign"]
+                for ad in ads
+                if ad.get("campaign", {}).get("id")
+            }
+            campaigns = list(campaigns_by_id.values())
             for campaign in campaigns:
                 conn.execute(
                     """
@@ -126,9 +138,8 @@ def sync_ad_account(account_id: str, triggered_by: str = "system") -> SyncResult
                 )
             result.campaigns = len(campaigns)
 
-            ads = get_ads(account_id)
             for ad in ads:
-                campaign_id = ad.get("campaign_id")
+                campaign_id = ad.get("campaign", {}).get("id")
                 if not campaign_id:
                     continue
                 conn.execute(
@@ -150,8 +161,10 @@ def sync_ad_account(account_id: str, triggered_by: str = "system") -> SyncResult
                     continue
                 conn.execute(
                     """
-                    INSERT INTO fb_creatives(creative_id, ad_id, title, body, image_url, thumbnail_url, video_id, updated_at)
-                    VALUES(?,?,?,?,?,?,?,?)
+                    INSERT INTO fb_creatives(
+                        creative_id, ad_id, title, body, image_url, thumbnail_url,
+                        video_id, instagram_user_id, updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(creative_id) DO UPDATE SET
                         ad_id=excluded.ad_id,
                         title=excluded.title,
@@ -159,19 +172,18 @@ def sync_ad_account(account_id: str, triggered_by: str = "system") -> SyncResult
                         image_url=excluded.image_url,
                         thumbnail_url=excluded.thumbnail_url,
                         video_id=excluded.video_id,
+                        instagram_user_id=excluded.instagram_user_id,
                         updated_at=excluded.updated_at
                     """,
                     (
                         creative["id"], ad["id"], creative.get("title"), creative.get("body"),
-                        creative.get("image_url"), creative.get("thumbnail_url"), creative.get("video_id"), updated_at,
+                        creative.get("image_url"), creative.get("thumbnail_url"), creative.get("video_id"),
+                        creative.get("instagram_user_id"), updated_at,
                     ),
                 )
                 result.creatives += 1
             result.ads = len(ads)
 
-            until = date.today()
-            since = until - timedelta(days=INSIGHTS_LOOKBACK_DAYS)
-            insights = get_insights(account_id, since.isoformat(), until.isoformat())
             for row in insights:
                 conn.execute(
                     """
@@ -190,6 +202,26 @@ def sync_ad_account(account_id: str, triggered_by: str = "system") -> SyncResult
                     ),
                 )
             result.insight_rows = len(insights)
+
+            try:
+                instagram_accounts = get_instagram_accounts(account_id)
+                for instagram_account in instagram_accounts:
+                    if not instagram_account.get("id"):
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO fb_instagram_accounts(account_id, instagram_user_id, username, updated_at)
+                        VALUES(?,?,?,?)
+                        ON CONFLICT(account_id, instagram_user_id) DO UPDATE SET
+                            username=excluded.username,
+                            updated_at=excluded.updated_at
+                        """,
+                        (account_id, instagram_account["id"], instagram_account.get("username"), updated_at),
+                    )
+            except FacebookApiError:
+                # Account discovery is optional: insights should still be saved when
+                # the token cannot list connected Instagram profiles.
+                pass
 
             conn.commit()
             result.status = "ok"
@@ -213,20 +245,20 @@ def sync_ad_account(account_id: str, triggered_by: str = "system") -> SyncResult
     return result
 
 
-def sync_all_active_accounts() -> list[SyncResult]:
+def sync_all_active_accounts(since: date, until: date) -> list[SyncResult]:
     with connect_db() as conn:
         account_ids = [
             row[0]
             for row in conn.execute("SELECT account_id FROM fb_ad_accounts WHERE is_active=1").fetchall()
         ]
-    return [sync_ad_account(account_id, triggered_by="system") for account_id in account_ids]
+    return [sync_ad_account(account_id, since, until, triggered_by="system") for account_id in account_ids]
 
 
 def last_sync_for_account(account_id: str) -> Optional[dict]:
     with connect_db() as conn:
         row = conn.execute(
             """
-            SELECT started_at, finished_at, status, message, triggered_by
+            SELECT started_at, finished_at, status, message, triggered_by, period_start, period_end
             FROM fb_sync_log
             WHERE account_id=?
             ORDER BY started_at DESC

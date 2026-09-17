@@ -230,8 +230,20 @@ def init_db() -> None:
                 image_url TEXT,
                 thumbnail_url TEXT,
                 video_id TEXT,
+                instagram_user_id TEXT,
                 tags TEXT,
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fb_instagram_accounts (
+                account_id TEXT NOT NULL,
+                instagram_user_id TEXT NOT NULL,
+                username TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(account_id, instagram_user_id)
             )
             """
         )
@@ -258,7 +270,9 @@ def init_db() -> None:
                 finished_at TEXT,
                 status TEXT NOT NULL,
                 message TEXT,
-                triggered_by TEXT
+                triggered_by TEXT,
+                period_start TEXT,
+                period_end TEXT
             )
             """
         )
@@ -476,10 +490,16 @@ def ensure_schema_columns(conn) -> None:
     creative_cols = _table_columns(conn, "fb_creatives")
     if "tags" not in creative_cols:
         conn.execute("ALTER TABLE fb_creatives ADD COLUMN tags TEXT")
+    if "instagram_user_id" not in creative_cols:
+        conn.execute("ALTER TABLE fb_creatives ADD COLUMN instagram_user_id TEXT")
 
     sync_log_cols = _table_columns(conn, "fb_sync_log")
     if "triggered_by" not in sync_log_cols:
         conn.execute("ALTER TABLE fb_sync_log ADD COLUMN triggered_by TEXT")
+    if "period_start" not in sync_log_cols:
+        conn.execute("ALTER TABLE fb_sync_log ADD COLUMN period_start TEXT")
+    if "period_end" not in sync_log_cols:
+        conn.execute("ALTER TABLE fb_sync_log ADD COLUMN period_end TEXT")
     conn.commit()
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import unittest
+from datetime import date
 from unittest.mock import Mock, patch
 
 from integrations import facebook_ads_client as client
@@ -24,16 +25,50 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         self.assertNotIn("access_token", kwargs["params"])
         self.assertEqual(kwargs["headers"], {"Authorization": "Bearer top-secret"})
 
-    @patch.object(client, "_get_all_pages")
-    def test_ads_and_creatives_are_requested_in_one_account_query(self, get_all_pages: Mock) -> None:
-        get_all_pages.return_value = []
+    @patch.object(client, "_get")
+    def test_only_selected_ads_and_creatives_are_requested(self, get: Mock) -> None:
+        get.return_value = {}
 
-        client.get_ads("act_123")
+        client.get_ads_by_ids(["101", "102"])
 
-        path, params = get_all_pages.call_args.args
-        self.assertEqual(path, "act_123/ads")
-        self.assertIn("campaign_id", params["fields"])
+        path, params = get.call_args.args
+        self.assertEqual(path, "")
+        self.assertEqual(params["ids"], "101,102")
+        self.assertIn("campaign{id", params["fields"])
         self.assertIn("creative{id", params["fields"])
+        self.assertIn("instagram_user_id", params["fields"])
+
+    @patch.object(client, "_get_all_pages")
+    def test_insights_are_chunked_and_overloaded_windows_are_split(self, get_all_pages: Mock) -> None:
+        def fake_get_all_pages(_path, params):
+            time_range = params["time_range"]
+            if '"since":"2026-09-01"' in time_range and '"until":"2026-09-07"' in time_range:
+                raise client.FacebookApiError("reduce data", code=1)
+            return [{"ad_id": time_range}]
+
+        get_all_pages.side_effect = fake_get_all_pages
+
+        rows = client.get_insights("act_123", "2026-09-01", "2026-09-10")
+
+        self.assertEqual(len(rows), 3)
+        requested_ranges = [call.args[1]["time_range"] for call in get_all_pages.call_args_list]
+        self.assertIn('{"since":"2026-09-01","until":"2026-09-07"}', requested_ranges)
+        self.assertIn('{"since":"2026-09-01","until":"2026-09-04"}', requested_ranges)
+        self.assertIn('{"since":"2026-09-08","until":"2026-09-10"}', requested_ranges)
+
+    @patch.object(client, "_get")
+    def test_overloaded_ad_detail_batch_is_split(self, get: Mock) -> None:
+        def fake_get(_path, params):
+            ids = params["ids"].split(",")
+            if len(ids) > 1:
+                raise client.FacebookApiError("reduce data", code=1)
+            return {ids[0]: {"id": ids[0]}}
+
+        get.side_effect = fake_get
+
+        rows = client.get_ads_by_ids(["101", "102"])
+
+        self.assertEqual([row["id"] for row in rows], ["101", "102"])
 
     def test_account_lock_is_atomic_and_audit_records_user(self) -> None:
         conn = sqlite3.connect(":memory:")
@@ -41,19 +76,22 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         conn.execute(
             """CREATE TABLE fb_sync_log(
                 id INTEGER PRIMARY KEY, account_id TEXT, started_at TEXT NOT NULL,
-                finished_at TEXT, status TEXT NOT NULL, message TEXT, triggered_by TEXT
+                finished_at TEXT, status TEXT NOT NULL, message TEXT, triggered_by TEXT,
+                period_start TEXT, period_end TEXT
             )"""
         )
 
         acquired, _ = _acquire_sync_lock(conn, "act_123")
         acquired_again, reason = _acquire_sync_lock(conn, "act_123")
-        log_id = _log_start(conn, "act_456", "maria")
+        log_id = _log_start(conn, "act_456", "maria", date(2026, 9, 1), date(2026, 9, 17))
 
         self.assertTrue(acquired)
         self.assertFalse(acquired_again)
         self.assertIn("already running", reason)
-        row = conn.execute("SELECT triggered_by FROM fb_sync_log WHERE id=?", (log_id,)).fetchone()
-        self.assertEqual(row[0], "maria")
+        row = conn.execute(
+            "SELECT triggered_by, period_start, period_end FROM fb_sync_log WHERE id=?", (log_id,)
+        ).fetchone()
+        self.assertEqual(row, ("maria", "2026-09-01", "2026-09-17"))
         conn.close()
 
 
