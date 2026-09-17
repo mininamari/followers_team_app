@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from datetime import date, timedelta
@@ -105,22 +106,60 @@ def _get_all_pages(path: str, params: Optional[dict] = None) -> list[dict]:
     return results
 
 
+def _batch_get(paths: list[str]) -> list[dict]:
+    """Run supported Graph batch GETs without the removed root ``ids`` parameter."""
+    token = _access_token()
+    response = requests.post(
+        f"{GRAPH_API_BASE}/",
+        data={"batch": json.dumps([{"method": "GET", "relative_url": path} for path in paths])},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        response.raise_for_status()
+        raise FacebookApiError(
+            tr(
+                f"Facebook API returned an unreadable batch response (status {response.status_code}).",
+                f"Facebook API вернул нечитаемый пакетный ответ (status {response.status_code}).",
+            )
+        )
+
+    if not response.ok or isinstance(payload, dict):
+        error = payload.get("error", {}) if isinstance(payload, dict) else {}
+        code = error.get("code")
+        message = error.get("message", "Unknown Facebook API batch error")
+        raise FacebookApiError(f"Facebook API error ({code}): {message}", code=code)
+
+    results: list[dict] = []
+    for item in payload:
+        try:
+            body = json.loads(item.get("body", "{}"))
+        except (TypeError, ValueError):
+            raise FacebookApiError("Facebook API returned an unreadable item in a batch response.")
+        if item.get("code", 500) >= 400 or "error" in body:
+            error = body.get("error", {})
+            code = error.get("code")
+            message = error.get("message", "Unknown Facebook API batch item error")
+            raise FacebookApiError(f"Facebook API error ({code}): {message}", code=code)
+        results.append(body)
+    return results
+
+
 def get_ads_by_ids(ad_ids: list[str], chunk_size: int = 50) -> list[dict]:
     """Fetch details only for ads that produced insights in the selected period."""
     results: list[dict] = []
 
     def fetch_chunk(chunk: list[str]) -> None:
         try:
-            payload = _get(
-                "",
-                {
-                    "ids": ",".join(chunk),
-                    "fields": (
-                        "id,name,status,adset_id,"
-                        "campaign{id,name,objective,status,created_time},"
-                        "creative{id,title,body,image_url,thumbnail_url,video_id,instagram_user_id}"
-                    ),
-                },
+            fields = (
+                "id,name,status,adset_id,"
+                "campaign{id,name,objective,status,created_time},"
+                "creative{id,title,body,image_url,thumbnail_url,video_id,instagram_user_id}"
+            )
+            payload = _batch_get(
+                [f"{ad_id}?{urlencode({'fields': fields})}" for ad_id in chunk]
             )
         except FacebookApiError as exc:
             if exc.code != 1 or len(chunk) == 1:
@@ -129,7 +168,7 @@ def get_ads_by_ids(ad_ids: list[str], chunk_size: int = 50) -> list[dict]:
             fetch_chunk(chunk[:midpoint])
             fetch_chunk(chunk[midpoint:])
             return
-        results.extend(value for value in payload.values() if isinstance(value, dict) and value.get("id"))
+        results.extend(value for value in payload if isinstance(value, dict) and value.get("id"))
 
     iterator = iter(dict.fromkeys(ad_ids))
     while chunk := list(islice(iterator, chunk_size)):
