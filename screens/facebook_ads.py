@@ -71,7 +71,19 @@ def _ads_overview_df(account_ids: list[str]) -> pd.DataFrame:
         LEFT JOIN fb_creatives cr ON cr.ad_id = a.ad_id
         LEFT JOIN fb_insights i ON i.ad_id = a.ad_id
         WHERE c.account_id IN ({placeholders})
-        GROUP BY c.campaign_id, a.ad_id
+        GROUP BY
+            c.account_id,
+            c.campaign_id,
+            c.name,
+            c.objective,
+            c.status,
+            a.ad_id,
+            a.name,
+            a.status,
+            cr.creative_id,
+            cr.title,
+            cr.thumbnail_url,
+            cr.tags
         ORDER BY spend DESC
     """
     return db_df(query, account_ids)
