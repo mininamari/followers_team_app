@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -11,7 +12,7 @@ from core.db import db_df
 from core.i18n import tr
 from core.style import hero
 from integrations.facebook_ads_client import is_configured
-from integrations.facebook_ads_sync import last_sync_for_account, sync_ad_account
+from integrations.facebook_ads_sync import MAX_SYNC_DAYS, last_sync_for_account, sync_ad_account
 
 FATIGUE_MIN_DAYS = 6
 FATIGUE_DECLINE_RATIO = 0.7
@@ -43,7 +44,9 @@ def _save_creative_tags(df: pd.DataFrame) -> None:
         conn.commit()
 
 
-def _ads_overview_df(account_ids: list[str]) -> pd.DataFrame:
+def _ads_overview_df(
+    account_ids: list[str], since: date, until: date, instagram_user_id: str | None = None
+) -> pd.DataFrame:
     if not account_ids:
         return pd.DataFrame()
     placeholders = ",".join(["?"] * len(account_ids))
@@ -61,6 +64,8 @@ def _ads_overview_df(account_ids: list[str]) -> pd.DataFrame:
             cr.title,
             cr.thumbnail_url,
             cr.tags,
+            cr.instagram_user_id,
+            ia.username AS instagram_username,
             COALESCE(SUM(i.spend), 0) AS spend,
             COALESCE(SUM(i.impressions), 0) AS impressions,
             COALESCE(SUM(i.reach), 0) AS reach,
@@ -68,8 +73,14 @@ def _ads_overview_df(account_ids: list[str]) -> pd.DataFrame:
         FROM fb_campaigns c
         JOIN fb_ads a ON a.campaign_id = c.campaign_id
         LEFT JOIN fb_creatives cr ON cr.ad_id = a.ad_id
+        LEFT JOIN fb_instagram_accounts ia
+            ON ia.account_id = c.account_id
+           AND ia.instagram_user_id = cr.instagram_user_id
         LEFT JOIN fb_insights i ON i.ad_id = a.ad_id
         WHERE c.account_id IN ({placeholders})
+          AND i.date_start >= ?
+          AND i.date_stop <= ?
+          {"AND cr.instagram_user_id = ?" if instagram_user_id else ""}
         GROUP BY
             c.account_id,
             c.campaign_id,
@@ -82,10 +93,15 @@ def _ads_overview_df(account_ids: list[str]) -> pd.DataFrame:
             cr.creative_id,
             cr.title,
             cr.thumbnail_url,
-            cr.tags
+            cr.tags,
+            cr.instagram_user_id,
+            ia.username
         ORDER BY spend DESC
     """
-    return db_df(query, account_ids)
+    params = [*account_ids, since.isoformat(), until.isoformat()]
+    if instagram_user_id:
+        params.append(instagram_user_id)
+    return db_df(query, params)
 
 
 def _attach_follower_match(df: pd.DataFrame) -> pd.DataFrame:
@@ -117,7 +133,7 @@ def _attach_follower_match(df: pd.DataFrame) -> pd.DataFrame:
     return merged.drop(columns=["publication_id"], errors="ignore")
 
 
-def _fatigued_ad_ids(ad_ids: list[str]) -> set[str]:
+def _fatigued_ad_ids(ad_ids: list[str], since: date, until: date) -> set[str]:
     """Ads whose daily reach dropped off in the second half of their history.
 
     Mirrors the "creative fatigue" idea from Alison.ai's dashboard: a creative that
@@ -127,8 +143,10 @@ def _fatigued_ad_ids(ad_ids: list[str]) -> set[str]:
         return set()
     placeholders = ",".join(["?"] * len(ad_ids))
     daily = db_df(
-        f"SELECT ad_id, date_start, reach FROM fb_insights WHERE ad_id IN ({placeholders}) ORDER BY ad_id, date_start",
-        ad_ids,
+        f"""SELECT ad_id, date_start, reach FROM fb_insights
+            WHERE ad_id IN ({placeholders}) AND date_start >= ? AND date_stop <= ?
+            ORDER BY ad_id, date_start""",
+        [*ad_ids, since.isoformat(), until.isoformat()],
     )
     if daily.empty:
         return set()
@@ -145,7 +163,7 @@ def _fatigued_ad_ids(ad_ids: list[str]) -> set[str]:
     return fatigued
 
 
-def _add_performance_flags(df: pd.DataFrame) -> pd.DataFrame:
+def _add_performance_flags(df: pd.DataFrame, since: date, until: date) -> pd.DataFrame:
     if df.empty:
         df["ctr"] = None
         df["fatigue"] = ""
@@ -158,7 +176,7 @@ def _add_performance_flags(df: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
 
-    fatigued = _fatigued_ad_ids(df["ad_id"].dropna().unique().tolist())
+    fatigued = _fatigued_ad_ids(df["ad_id"].dropna().unique().tolist(), since, until)
     df["fatigue"] = df["ad_id"].apply(lambda ad_id: "📉 Fatigue" if ad_id in fatigued else "")
 
     if len(df) >= MIN_ROWS_FOR_PERFORMANCE_FLAG and df["ctr"].notna().any():
@@ -236,6 +254,65 @@ def page_facebook_ads(user: dict) -> None:
         st.info(tr("Add a Facebook ad account to start syncing.", "Добавьте рекламный аккаунт Facebook, чтобы начать синхронизацию."))
         return
 
+    st.markdown("### " + tr("Period And Region", "Период и регион"))
+    period_col1, period_col2 = st.columns(2)
+    default_until = date.today()
+    default_since = default_until - timedelta(days=29)
+    since = period_col1.date_input(tr("From", "С"), value=default_since, key="fb_ads_since")
+    until = period_col2.date_input(tr("To", "По"), value=default_until, key="fb_ads_until")
+
+    period_error = ""
+    if since > until:
+        period_error = tr("The start date must not be later than the end date.", "Дата начала не может быть позже даты окончания.")
+    elif until > date.today():
+        period_error = tr("The end date cannot be in the future.", "Дата окончания не может быть в будущем.")
+    elif (until - since).days + 1 > MAX_SYNC_DAYS:
+        period_error = tr(
+            f"Select no more than {MAX_SYNC_DAYS} days.",
+            f"Выберите период не более {MAX_SYNC_DAYS} дней.",
+        )
+    if period_error:
+        st.error(period_error)
+
+    account_ids = accounts_df["account_id"].tolist()
+    account_placeholders = ",".join(["?"] * len(account_ids))
+    instagram_accounts = db_df(
+        f"""SELECT instagram_user_id, MAX(username) AS username
+            FROM (
+                SELECT instagram_user_id, username
+                FROM fb_instagram_accounts
+                WHERE account_id IN ({account_placeholders})
+                UNION ALL
+                SELECT cr.instagram_user_id, NULL AS username
+                FROM fb_creatives cr
+                JOIN fb_ads a ON a.ad_id = cr.ad_id
+                JOIN fb_campaigns c ON c.campaign_id = a.campaign_id
+                WHERE c.account_id IN ({account_placeholders})
+                  AND cr.instagram_user_id IS NOT NULL
+            ) profiles
+            GROUP BY instagram_user_id
+            ORDER BY username, instagram_user_id""",
+        [*account_ids, *account_ids],
+    )
+    region_options: dict[str | None, str] = {None: tr("All Instagram accounts", "Все Instagram-аккаунты")}
+    for _, instagram_account in instagram_accounts.iterrows():
+        instagram_id = str(instagram_account["instagram_user_id"])
+        username = instagram_account.get("username")
+        region_options[instagram_id] = f"@{username}" if pd.notna(username) and str(username).strip() else instagram_id
+    selected_instagram_id = st.selectbox(
+        tr("Instagram account / region", "Instagram-аккаунт / регион"),
+        options=list(region_options),
+        format_func=lambda value: region_options[value],
+        key="fb_ads_instagram_account",
+    )
+    if instagram_accounts.empty:
+        st.caption(
+            tr(
+                "Run the first sync for the selected period to discover Instagram accounts connected to this ad account.",
+                "Запустите первую синхронизацию за выбранный период, чтобы определить Instagram-аккаунты, подключённые к кабинету.",
+            )
+        )
+
     if can_manage:
         st.markdown("### " + tr("Sync", "Синхронизация"))
         for _, row in accounts_df.iterrows():
@@ -250,11 +327,11 @@ def page_facebook_ads(user: dict) -> None:
             if col2.button(
                 "Sync now",
                 key=f"sync_{row['account_id']}",
-                disabled=not is_configured(),
+                disabled=not is_configured() or bool(period_error),
                 use_container_width=True,
             ):
                 with st.spinner(tr("Syncing...", "Синхронизация...")):
-                    result = sync_ad_account(row["account_id"], triggered_by=user["username"])
+                    result = sync_ad_account(row["account_id"], since, until, triggered_by=user["username"])
                 if result.status == "ok":
                     st.success(result.message)
                 elif result.status == "skipped":
@@ -264,13 +341,13 @@ def page_facebook_ads(user: dict) -> None:
                 st.rerun()
 
     st.markdown("### " + tr("Campaigns And Ads", "Кампании и объявления"))
-    overview = _ads_overview_df(accounts_df["account_id"].tolist())
+    overview = _ads_overview_df(account_ids, since, until, selected_instagram_id)
     overview = _attach_follower_match(overview)
     if overview.empty:
         st.info(tr("No data yet. Run sync above.", "Пока нет данных. Запустите синхронизацию выше."))
         return
 
-    overview = _add_performance_flags(overview)
+    overview = _add_performance_flags(overview, since, until)
     overview_full = overview
 
     sort_options = {
@@ -302,7 +379,7 @@ def page_facebook_ads(user: dict) -> None:
         st.info(tr("No ads match the selected filter.", "Нет объявлений под выбранный фильтр."))
     else:
         display_cols = [
-            "campaign_name", "ad_name", "ad_status", "thumbnail_url", "spend", "impressions",
+            "instagram_username", "campaign_name", "ad_name", "ad_status", "thumbnail_url", "spend", "impressions",
             "reach", "ctr", "fatigue", "performance_flag", "matched_followers", "matched_cpf", "tags",
         ]
         st.dataframe(
@@ -310,6 +387,7 @@ def page_facebook_ads(user: dict) -> None:
             use_container_width=True,
             hide_index=True,
             column_config={
+                "instagram_username": tr("Instagram / region", "Instagram / регион"),
                 "campaign_name": tr("Campaign", "Кампания"),
                 "ad_name": tr("Ad", "Объявление"),
                 "ad_status": tr("Status", "Статус"),

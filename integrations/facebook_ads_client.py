@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from itertools import islice
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -96,24 +97,29 @@ def _get_all_pages(path: str, params: Optional[dict] = None) -> list[dict]:
     return results
 
 
-def get_campaigns(account_id: str) -> list[dict]:
-    return _get_all_pages(
-        f"{account_id}/campaigns",
-        {"fields": "id,name,objective,status,created_time"},
-    )
+def get_ads_by_ids(ad_ids: list[str], chunk_size: int = 50) -> list[dict]:
+    """Fetch details only for ads that produced insights in the selected period."""
+    results: list[dict] = []
+    iterator = iter(dict.fromkeys(ad_ids))
+    while chunk := list(islice(iterator, chunk_size)):
+        payload = _get(
+            "",
+            {
+                "ids": ",".join(chunk),
+                "fields": (
+                    "id,name,status,adset_id,"
+                    "campaign{id,name,objective,status,created_time},"
+                    "creative{id,title,body,image_url,thumbnail_url,video_id,instagram_user_id}"
+                ),
+            },
+        )
+        results.extend(value for value in payload.values() if isinstance(value, dict) and value.get("id"))
+    return results
 
 
-def get_ads(account_id: str) -> list[dict]:
-    """Fetch all ads and their creative metadata in one paginated account query."""
-    return _get_all_pages(
-        f"{account_id}/ads",
-        {
-            "fields": (
-                "id,name,status,adset_id,campaign_id,"
-                "creative{id,title,body,image_url,thumbnail_url,video_id}"
-            )
-        },
-    )
+def get_instagram_accounts(account_id: str) -> list[dict]:
+    payload = _get(account_id, {"fields": "instagram_accounts{id,username}"})
+    return payload.get("instagram_accounts", {}).get("data", [])
 
 
 def get_insights(account_id: str, since: str, until: str) -> list[dict]:
@@ -121,7 +127,10 @@ def get_insights(account_id: str, since: str, until: str) -> list[dict]:
         f"{account_id}/insights",
         {
             "level": "ad",
-            "fields": "ad_id,date_start,date_stop,spend,impressions,reach,clicks",
+            "fields": (
+                "campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,"
+                "date_start,date_stop,spend,impressions,reach,clicks"
+            ),
             "time_range": f'{{"since":"{since}","until":"{until}"}}',
             "time_increment": 1,
         },
