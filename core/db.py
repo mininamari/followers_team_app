@@ -257,6 +257,7 @@ def init_db() -> None:
                 impressions INTEGER NOT NULL DEFAULT 0,
                 reach INTEGER NOT NULL DEFAULT 0,
                 clicks INTEGER NOT NULL DEFAULT 0,
+                instagram_followers REAL,
                 PRIMARY KEY(ad_id, date_start, date_stop)
             )
             """
@@ -492,6 +493,10 @@ def ensure_schema_columns(conn) -> None:
         conn.execute("ALTER TABLE fb_creatives ADD COLUMN tags TEXT")
     if "instagram_user_id" not in creative_cols:
         conn.execute("ALTER TABLE fb_creatives ADD COLUMN instagram_user_id TEXT")
+
+    insight_cols = _table_columns(conn, "fb_insights")
+    if "instagram_followers" not in insight_cols:
+        conn.execute("ALTER TABLE fb_insights ADD COLUMN instagram_followers REAL")
 
     sync_log_cols = _table_columns(conn, "fb_sync_log")
     if "triggered_by" not in sync_log_cols:

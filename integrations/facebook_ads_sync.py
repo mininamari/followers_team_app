@@ -13,6 +13,21 @@ SYNC_COOLDOWN_MINUTES = 5
 SYNC_LOCK_STALE_MINUTES = 30
 
 
+def _is_instagram_follow_action(action_type: object) -> bool:
+    normalized = str(action_type or "").strip().lower()
+    if normalized in {"follow", "follows", "instagram_follow", "instagram_follows"}:
+        return True
+    return "instagram" in normalized and "follow" in normalized
+
+
+def _instagram_followers_from_insight(row: dict) -> float:
+    return sum(
+        float(action.get("value", 0) or 0)
+        for action in (row.get("actions") or [])
+        if _is_instagram_follow_action(action.get("action_type"))
+    )
+
+
 @dataclass
 class SyncResult:
     account_id: str
@@ -199,18 +214,21 @@ def sync_ad_account(
             for row in insights:
                 conn.execute(
                     """
-                    INSERT INTO fb_insights(ad_id, date_start, date_stop, spend, impressions, reach, clicks)
-                    VALUES(?,?,?,?,?,?,?)
+                    INSERT INTO fb_insights(
+                        ad_id, date_start, date_stop, spend, impressions, reach, clicks, instagram_followers
+                    ) VALUES(?,?,?,?,?,?,?,?)
                     ON CONFLICT(ad_id, date_start, date_stop) DO UPDATE SET
                         spend=excluded.spend,
                         impressions=excluded.impressions,
                         reach=excluded.reach,
-                        clicks=excluded.clicks
+                        clicks=excluded.clicks,
+                        instagram_followers=excluded.instagram_followers
                     """,
                     (
                         row["ad_id"], row["date_start"], row["date_stop"],
                         float(row.get("spend", 0) or 0), int(row.get("impressions", 0) or 0),
                         int(row.get("reach", 0) or 0), int(row.get("clicks", 0) or 0),
+                        _instagram_followers_from_insight(row),
                     ),
                 )
             result.insight_rows = len(insights)

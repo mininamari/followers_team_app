@@ -157,7 +157,13 @@ def _ads_overview_df(
             COALESCE(SUM(i.spend), 0) AS spend,
             COALESCE(SUM(i.impressions), 0) AS impressions,
             COALESCE(SUM(i.reach), 0) AS reach,
-            COALESCE(SUM(i.clicks), 0) AS clicks
+            COALESCE(SUM(i.clicks), 0) AS clicks,
+            COALESCE(SUM(i.instagram_followers), 0) AS followers,
+            CASE
+                WHEN COALESCE(SUM(i.instagram_followers), 0) > 0
+                THEN COALESCE(SUM(i.spend), 0) / SUM(i.instagram_followers)
+                ELSE NULL
+            END AS cpf
         FROM fb_campaigns c
         JOIN fb_ads a ON a.campaign_id = c.campaign_id
         LEFT JOIN fb_creatives cr ON cr.ad_id = a.ad_id
@@ -417,6 +423,8 @@ def page_facebook_ads(user: dict) -> None:
         "Spend": "spend",
         "Reach": "reach",
         "CTR": "ctr",
+        "Followers": "followers",
+        tr("CPF (lower is better)", "CPF (ниже — лучше)"): "cpf",
     }
     filter_col, sort_col = st.columns([2, 1])
     view_filter = filter_col.radio(
@@ -434,14 +442,14 @@ def page_facebook_ads(user: dict) -> None:
         overview = overview[overview["performance_flag"] != ""]
 
     sort_key = sort_options[sort_label]
-    overview = overview.sort_values(sort_key, ascending=False, na_position="last")
+    overview = overview.sort_values(sort_key, ascending=(sort_key == "cpf"), na_position="last")
 
     if overview.empty:
         st.info(tr("No ads match the selected filter.", "Нет объявлений под выбранный фильтр."))
     else:
         display_cols = [
             "instagram_username", "campaign_name", "ad_name", "ad_status", "thumbnail_url", "spend", "impressions",
-            "reach", "ctr", "fatigue", "performance_flag", "tags",
+            "reach", "ctr", "followers", "cpf", "fatigue", "performance_flag", "tags",
         ]
         st.dataframe(
             overview[display_cols],
@@ -455,6 +463,8 @@ def page_facebook_ads(user: dict) -> None:
                 "thumbnail_url": st.column_config.ImageColumn("Creative"),
                 "spend": st.column_config.NumberColumn("Spend, USD", format="$%.2f"),
                 "ctr": st.column_config.NumberColumn("CTR, %", format="%.2f%%"),
+                "followers": st.column_config.NumberColumn(tr("Followers (API)", "Подписчики (API)"), format="%.0f"),
+                "cpf": st.column_config.NumberColumn("CPF (API), USD", format="$%.2f"),
                 "fatigue": "",
                 "performance_flag": "",
                 "tags": tr("Tags", "Теги"),

@@ -228,7 +228,10 @@ def _get_insights_window(
 ) -> list[dict]:
     params = {
         "level": "ad",
-        "fields": "ad_id,date_start,date_stop,spend,impressions,reach,clicks",
+        "fields": (
+            "ad_id,date_start,date_stop,spend,impressions,reach,clicks,"
+            "actions,cost_per_action_type"
+        ),
         "time_range": f'{{"since":"{since.isoformat()}","until":"{until.isoformat()}"}}',
         "time_increment": 1,
     }
