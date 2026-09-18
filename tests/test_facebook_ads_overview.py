@@ -38,6 +38,8 @@ class FacebookAdsOverviewTests(unittest.TestCase):
         self.assertEqual(params, ["act_123", "2026-09-01", "2026-09-17"])
         self.assertIn("i.date_start >= ?", query)
         self.assertNotIn("cr.instagram_user_id = ?", query)
+        self.assertIn("SUM(i.instagram_followers)", query)
+        self.assertIn("END AS cpf", query)
         for column in expected_columns:
             self.assertIn(column, group_by)
 
