@@ -23,11 +23,16 @@ def _is_instagram_follow_action(action_type: object) -> bool:
 
 
 def _instagram_followers_from_insight(row: dict) -> float:
-    return sum(
-        float(action.get("value", 0) or 0)
-        for action in (row.get("actions") or [])
-        if _is_instagram_follow_action(action.get("action_type"))
-    )
+    # Meta reports some conversion-style actions (e.g. instagram_profile_follow,
+    # added August 2026) only under "conversions", not "actions". Dedupe by
+    # action_type so an action present in both fields isn't counted twice.
+    by_type: dict[str, float] = {}
+    for field_name in ("actions", "conversions"):
+        for action in row.get(field_name) or []:
+            action_type = str(action.get("action_type") or "")
+            if action_type and _is_instagram_follow_action(action_type) and action_type not in by_type:
+                by_type[action_type] = float(action.get("value", 0) or 0)
+    return sum(by_type.values())
 
 
 @dataclass
@@ -264,7 +269,8 @@ def sync_ad_account(
             follow_action_types = sorted({
                 str(action.get("action_type"))
                 for row in insights
-                for action in (row.get("actions") or [])
+                for field_name in ("actions", "conversions")
+                for action in (row.get(field_name) or [])
                 if "follow" in str(action.get("action_type", "")).lower()
                 or str(action.get("action_type", "")).lower() == "like"
             })
