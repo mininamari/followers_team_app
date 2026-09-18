@@ -386,6 +386,8 @@ def page_facebook_ads(user: dict) -> None:
             if last_sync and last_sync.get("triggered_by"):
                 status_text += f" — {tr('started by', 'запустил(а)')}: {last_sync['triggered_by']}"
             col1.write(f"**{row['label'] or row['account_id']}** ({row['account_id']}) — {status_text}")
+            if last_sync and last_sync.get("message"):
+                col1.caption(last_sync["message"])
             if col2.button(
                 "Sync now",
                 key=f"sync_{row['account_id']}",
