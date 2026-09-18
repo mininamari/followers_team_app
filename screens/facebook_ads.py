@@ -104,35 +104,6 @@ def _ads_overview_df(
     return db_df(query, params)
 
 
-def _attach_follower_match(df: pd.DataFrame) -> pd.DataFrame:
-    """Best-effort join to manually uploaded followers, matched by ad name == publication id.
-
-    This mirrors the existing Novakid PR matching in core.csv_import.import_pr, which
-    already keys manual follower uploads by ad name. The real join key should be
-    revisited once live Facebook ad names are visible in Sync.
-    """
-    if df.empty:
-        df["matched_followers"] = None
-        df["matched_cpf"] = None
-        return df
-    final_results = db_df(
-        "SELECT publication_id, SUM(final_followers) AS matched_followers "
-        "FROM final_results GROUP BY publication_id"
-    )
-    if final_results.empty:
-        df["matched_followers"] = None
-        df["matched_cpf"] = None
-        return df
-    merged = df.merge(final_results, left_on="ad_name", right_on="publication_id", how="left")
-    merged["matched_cpf"] = merged.apply(
-        lambda r: round(r["spend"] / r["matched_followers"], 4)
-        if r.get("matched_followers") and r["matched_followers"] > 0
-        else None,
-        axis=1,
-    )
-    return merged.drop(columns=["publication_id"], errors="ignore")
-
-
 def _fatigued_ad_ids(ad_ids: list[str], since: date, until: date) -> set[str]:
     """Ads whose daily reach dropped off in the second half of their history.
 
@@ -202,11 +173,10 @@ def page_facebook_ads(user: dict) -> None:
     hero(
         "Facebook Ads",
         tr(
-            "Campaigns, ads, creatives, and spend from the Facebook Marketing API matched with followers from manual Novakid PR uploads.",
-            "Кампании, объявления, креативы и расходы из Facebook Marketing API, сопоставленные "
-            "с подписчиками из ручных выгрузок Novakid PR.",
+            "Campaigns, ads, creatives, and performance from the Facebook Marketing API.",
+            "Кампании, объявления, креативы и показатели из Facebook Marketing API.",
         ),
-        ["Campaigns", "Creatives", "Spend", "Best-effort match"],
+        ["Campaigns", "Creatives", "Spend", "API data"],
     )
 
     if not is_configured():
@@ -342,7 +312,6 @@ def page_facebook_ads(user: dict) -> None:
 
     st.markdown("### " + tr("Campaigns And Ads", "Кампании и объявления"))
     overview = _ads_overview_df(account_ids, since, until, selected_instagram_id)
-    overview = _attach_follower_match(overview)
     if overview.empty:
         st.info(tr("No data yet. Run sync above.", "Пока нет данных. Запустите синхронизацию выше."))
         return
@@ -354,8 +323,6 @@ def page_facebook_ads(user: dict) -> None:
         "Spend": "spend",
         "Reach": "reach",
         "CTR": "ctr",
-        "Matched followers": "matched_followers",
-        tr("Matched CPF (lower is better)", "Matched CPF (ниже — лучше)"): "matched_cpf",
     }
     filter_col, sort_col = st.columns([2, 1])
     view_filter = filter_col.radio(
@@ -373,14 +340,14 @@ def page_facebook_ads(user: dict) -> None:
         overview = overview[overview["performance_flag"] != ""]
 
     sort_key = sort_options[sort_label]
-    overview = overview.sort_values(sort_key, ascending=(sort_key == "matched_cpf"), na_position="last")
+    overview = overview.sort_values(sort_key, ascending=False, na_position="last")
 
     if overview.empty:
         st.info(tr("No ads match the selected filter.", "Нет объявлений под выбранный фильтр."))
     else:
         display_cols = [
             "instagram_username", "campaign_name", "ad_name", "ad_status", "thumbnail_url", "spend", "impressions",
-            "reach", "ctr", "fatigue", "performance_flag", "matched_followers", "matched_cpf", "tags",
+            "reach", "ctr", "fatigue", "performance_flag", "tags",
         ]
         st.dataframe(
             overview[display_cols],
@@ -396,8 +363,6 @@ def page_facebook_ads(user: dict) -> None:
                 "ctr": st.column_config.NumberColumn("CTR, %", format="%.2f%%"),
                 "fatigue": "",
                 "performance_flag": "",
-                "matched_followers": tr("Followers (matched)", "Подписчики (matched)"),
-                "matched_cpf": st.column_config.NumberColumn("CPF (matched), USD", format="$%.2f"),
                 "tags": tr("Tags", "Теги"),
             },
         )

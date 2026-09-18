@@ -52,8 +52,29 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         self.assertNotIn("access_token", kwargs["data"])
         self.assertEqual(result, [{"id": "101"}])
 
+    @patch.dict(os.environ, {"META_ACCESS_TOKEN": "top-secret"})
+    @patch.object(client.time, "sleep")
+    @patch.object(client.requests, "post")
+    def test_batch_rate_limit_waits_before_retrying(self, request_post: Mock, sleep: Mock) -> None:
+        limited = Mock(ok=True)
+        limited.json.return_value = [
+            {"code": 400, "body": '{"error":{"code":17,"message":"rate limited"}}'}
+        ]
+        success = Mock(ok=True)
+        success.json.return_value = [{"code": 200, "body": '{"id":"101"}'}]
+        request_post.side_effect = [limited, success]
+
+        result = client._batch_get(["101?fields=id"])
+
+        self.assertEqual(result, [{"id": "101"}])
+        sleep.assert_called_once_with(2.0)
+        self.assertEqual(request_post.call_count, 2)
+
+    @patch.object(client.time, "sleep")
     @patch.object(client, "_get_all_pages")
-    def test_insights_are_chunked_and_overloaded_windows_are_split(self, get_all_pages: Mock) -> None:
+    def test_insights_are_chunked_and_overloaded_windows_are_split(
+        self, get_all_pages: Mock, sleep: Mock
+    ) -> None:
         def fake_get_all_pages(_path, params):
             time_range = params["time_range"]
             if '"since":"2026-09-01"' in time_range and '"until":"2026-09-07"' in time_range:
@@ -69,9 +90,11 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         self.assertIn('{"since":"2026-09-01","until":"2026-09-07"}', requested_ranges)
         self.assertIn('{"since":"2026-09-01","until":"2026-09-04"}', requested_ranges)
         self.assertIn('{"since":"2026-09-08","until":"2026-09-10"}', requested_ranges)
+        sleep.assert_called_once_with(client.DATA_REDUCTION_DELAY_SECONDS)
 
+    @patch.object(client.time, "sleep")
     @patch.object(client, "_batch_get")
-    def test_overloaded_ad_detail_batch_is_split(self, batch_get: Mock) -> None:
+    def test_overloaded_ad_detail_batch_is_split(self, batch_get: Mock, sleep: Mock) -> None:
         def fake_batch_get(paths):
             if len(paths) > 1:
                 raise client.FacebookApiError("reduce data", code=1)
@@ -83,6 +106,7 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         rows = client.get_ads_by_ids(["101", "102"])
 
         self.assertEqual([row["id"] for row in rows], ["101", "102"])
+        sleep.assert_called_once_with(client.DATA_REDUCTION_DELAY_SECONDS)
 
     def test_account_lock_is_atomic_and_audit_records_user(self) -> None:
         conn = sqlite3.connect(":memory:")
