@@ -23,9 +23,14 @@ def _is_instagram_follow_action(action_type: object) -> bool:
 
 
 def _instagram_followers_from_insight(row: dict) -> float:
-    # Meta reports some conversion-style actions (e.g. instagram_profile_follow,
-    # added August 2026) only under "conversions", not "actions". Dedupe by
-    # action_type so an action present in both fields isn't counted twice.
+    # The dedicated metric is authoritative when Meta returns it. The same
+    # conversions can also be mirrored under one or more action_type aliases,
+    # so combining the sources would double count followers.
+    if row.get("instagram_profile_follow") is not None:
+        return float(row["instagram_profile_follow"] or 0)
+
+    # Dedupe by action_type so an action present in both "actions" and
+    # "conversions" isn't counted twice when the dedicated field is absent.
     by_type: dict[str, float] = {}
     for field_name in ("actions", "conversions"):
         for action in row.get(field_name) or []:
@@ -33,6 +38,22 @@ def _instagram_followers_from_insight(row: dict) -> float:
             if action_type and _is_instagram_follow_action(action_type) and action_type not in by_type:
                 by_type[action_type] = float(action.get("value", 0) or 0)
     return sum(by_type.values())
+
+
+def _follow_sync_diagnostics(insights: list[dict]) -> str:
+    total_follows = sum(_instagram_followers_from_insight(row) for row in insights)
+    message = f"instagram follows: {total_follows:g}"
+    follow_action_types = sorted({
+        str(action.get("action_type"))
+        for row in insights
+        for field_name in ("actions", "conversions")
+        for action in (row.get(field_name) or [])
+        if "follow" in str(action.get("action_type", "")).lower()
+        or str(action.get("action_type", "")).lower() == "like"
+    })
+    if follow_action_types:
+        message += f"; follow action types: {', '.join(follow_action_types)}"
+    return message
 
 
 @dataclass
@@ -266,19 +287,7 @@ def sync_ad_account(
                 f"{result.campaigns} campaigns, {result.ads} ads, "
                 f"{result.creatives} creatives, {result.insight_rows} insight rows"
             )
-            follow_action_types = sorted({
-                str(action.get("action_type"))
-                for row in insights
-                for field_name in ("actions", "conversions")
-                for action in (row.get(field_name) or [])
-                if "follow" in str(action.get("action_type", "")).lower()
-                or str(action.get("action_type", "")).lower() == "like"
-            })
-            result.message += (
-                f"; follow action types: {', '.join(follow_action_types)}"
-                if follow_action_types
-                else "; Meta returned no follow action_type"
-            )
+            result.message += f"; {_follow_sync_diagnostics(insights)}"
             if profile_name:
                 result.message = f"@{profile_name}: {result.message}"
             _log_finish(conn, log_id, "ok", result.message)

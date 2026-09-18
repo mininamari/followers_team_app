@@ -9,7 +9,12 @@ from unittest.mock import Mock, patch
 import requests
 
 from integrations import facebook_ads_client as client
-from integrations.facebook_ads_sync import _acquire_sync_lock, _instagram_followers_from_insight, _log_start
+from integrations.facebook_ads_sync import (
+    _acquire_sync_lock,
+    _follow_sync_diagnostics,
+    _instagram_followers_from_insight,
+    _log_start,
+)
 
 
 class FacebookAdsSafetyTests(unittest.TestCase):
@@ -118,6 +123,7 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         self.assertIn("actions", params["fields"])
         self.assertIn("conversions", params["fields"])
         self.assertIn("cost_per_action_type", params["fields"])
+        self.assertIn("instagram_profile_follow", params["fields"])
         self.assertEqual(
             params["filtering"],
             '[{"field":"campaign.name","operator":"CONTAIN","value":"[r:es]"}]',
@@ -154,6 +160,31 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         }
 
         self.assertEqual(_instagram_followers_from_insight(row), 8.0)
+
+    def test_instagram_followers_are_read_from_top_level_field(self) -> None:
+        # Confirmed against a real Graph API response: Meta reports
+        # instagram_profile_follow as its own top-level insight field, not
+        # nested inside "actions" or "conversions" at all. If aliases are
+        # mirrored in those arrays, the dedicated field must win to avoid
+        # double counting the same follows.
+        row = {
+            "actions": [
+                {"action_type": "link_click", "value": "25"},
+                {"action_type": "onsite_conversion.instagram_profile_follow", "value": "10"},
+                {"action_type": "onsite_conversion.follow", "value": "10"},
+            ],
+            "conversions": [
+                {"action_type": "instagram_profile_follow", "value": "10"},
+            ],
+            "instagram_profile_follow": "10",
+        }
+
+        self.assertEqual(_instagram_followers_from_insight(row), 10.0)
+        self.assertEqual(
+            _follow_sync_diagnostics([row]),
+            "instagram follows: 10; follow action types: instagram_profile_follow, "
+            "onsite_conversion.follow, onsite_conversion.instagram_profile_follow",
+        )
 
     @patch.object(client, "_get_all_pages")
     def test_insights_use_unified_attribution_setting(self, get_all_pages: Mock) -> None:
