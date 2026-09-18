@@ -116,6 +116,7 @@ class FacebookAdsSafetyTests(unittest.TestCase):
 
         params = get_all_pages.call_args.args[1]
         self.assertIn("actions", params["fields"])
+        self.assertIn("conversions", params["fields"])
         self.assertIn("cost_per_action_type", params["fields"])
         self.assertEqual(
             params["filtering"],
@@ -137,6 +138,22 @@ class FacebookAdsSafetyTests(unittest.TestCase):
 
         self.assertEqual(_instagram_followers_from_insight(row), 12.0)
         self.assertEqual(_instagram_followers_from_insight({}), 0.0)
+
+    def test_instagram_followers_are_read_from_conversions_without_double_counting(self) -> None:
+        # instagram_profile_follow (added by Meta in August 2026) can appear only
+        # under "conversions", and some action types are mirrored in both fields.
+        row = {
+            "actions": [
+                {"action_type": "onsite_conversion.follow", "value": "3"},
+                {"action_type": "like", "value": "50"},
+            ],
+            "conversions": [
+                {"action_type": "instagram_profile_follow", "value": "5"},
+                {"action_type": "onsite_conversion.follow", "value": "3"},
+            ],
+        }
+
+        self.assertEqual(_instagram_followers_from_insight(row), 8.0)
 
     @patch.object(client, "_get_all_pages")
     def test_insights_use_unified_attribution_setting(self, get_all_pages: Mock) -> None:
