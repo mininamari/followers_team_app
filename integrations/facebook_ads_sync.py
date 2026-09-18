@@ -15,9 +15,11 @@ SYNC_LOCK_STALE_MINUTES = 30
 
 def _is_instagram_follow_action(action_type: object) -> bool:
     normalized = str(action_type or "").strip().lower()
-    if normalized in {"follow", "follows", "instagram_follow", "instagram_follows"}:
-        return True
-    return "instagram" in normalized and "follow" in normalized
+    if not normalized or "unfollow" in normalized:
+        return False
+    if normalized == "like" or "facebook" in normalized or "page" in normalized:
+        return False
+    return "follow" in normalized
 
 
 def _instagram_followers_from_insight(row: dict) -> float:
@@ -258,6 +260,18 @@ def sync_ad_account(
             result.message = (
                 f"{result.campaigns} campaigns, {result.ads} ads, "
                 f"{result.creatives} creatives, {result.insight_rows} insight rows"
+            )
+            follow_action_types = sorted({
+                str(action.get("action_type"))
+                for row in insights
+                for action in (row.get("actions") or [])
+                if "follow" in str(action.get("action_type", "")).lower()
+                or str(action.get("action_type", "")).lower() == "like"
+            })
+            result.message += (
+                f"; follow action types: {', '.join(follow_action_types)}"
+                if follow_action_types
+                else "; Meta returned no follow action_type"
             )
             if profile_name:
                 result.message = f"@{profile_name}: {result.message}"

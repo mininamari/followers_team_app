@@ -234,6 +234,7 @@ def _get_insights_window(
         ),
         "time_range": f'{{"since":"{since.isoformat()}","until":"{until.isoformat()}"}}',
         "time_increment": 1,
+        "use_unified_attribution_setting": "true",
     }
     if region_code:
         params["filtering"] = json.dumps(

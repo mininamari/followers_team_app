@@ -126,13 +126,26 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         row = {
             "actions": [
                 {"action_type": "onsite_conversion.instagram_profile_follow", "value": "7"},
+                {"action_type": "onsite_conversion.follow", "value": "3"},
                 {"action_type": "link_click", "value": "90"},
                 {"action_type": "instagram_follows", "value": "2"},
+                {"action_type": "like", "value": "50"},
+                {"action_type": "facebook_page_follow", "value": "40"},
+                {"action_type": "instagram_unfollow", "value": "6"},
             ]
         }
 
-        self.assertEqual(_instagram_followers_from_insight(row), 9.0)
+        self.assertEqual(_instagram_followers_from_insight(row), 12.0)
         self.assertEqual(_instagram_followers_from_insight({}), 0.0)
+
+    @patch.object(client, "_get_all_pages")
+    def test_insights_use_unified_attribution_setting(self, get_all_pages: Mock) -> None:
+        get_all_pages.return_value = []
+
+        client.get_insights("act_123", "2026-09-01", "2026-09-01")
+
+        params = get_all_pages.call_args.args[1]
+        self.assertEqual(params["use_unified_attribution_setting"], "true")
 
     @patch.object(client.time, "sleep")
     @patch.object(client, "_batch_get")
