@@ -6,10 +6,23 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from screens.facebook_ads import _ads_overview_df, _instagram_profile_options, _profile_from_ad_names
+from screens.facebook_ads import (
+    _ads_overview_df,
+    _instagram_profile_options,
+    _profile_from_ad_names,
+    _sync_validation_error,
+)
 
 
 class FacebookAdsOverviewTests(unittest.TestCase):
+    def test_sync_button_reports_validation_problem_instead_of_being_disabled(self) -> None:
+        self.assertEqual(
+            _sync_validation_error(True, "Select no more than 90 days."),
+            "Select no more than 90 days.",
+        )
+        self.assertIn("META_ACCESS_TOKEN", _sync_validation_error(False, ""))
+        self.assertEqual(_sync_validation_error(True, ""), "")
+
     @patch("screens.facebook_ads.db_df")
     def test_query_groups_every_selected_non_aggregate_column(self, db_df) -> None:
         db_df.return_value = pd.DataFrame()

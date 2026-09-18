@@ -57,6 +57,16 @@ PROFILE_REGION_DEFAULTS = {
 }
 
 
+def _sync_validation_error(configured: bool, period_error: str) -> str:
+    """Return why sync cannot start while keeping the button responsive."""
+    if not configured:
+        return tr(
+            "META_ACCESS_TOKEN is not configured in Railway.",
+            "META_ACCESS_TOKEN не настроен в Railway.",
+        )
+    return period_error
+
+
 def _region_profile_from_ad_names(*names: object) -> tuple[str, str | None] | None:
     for value in names:
         text = str(value or "").strip()
@@ -388,12 +398,16 @@ def page_facebook_ads(user: dict) -> None:
             col1.write(f"**{row['label'] or row['account_id']}** ({row['account_id']}) — {status_text}")
             if last_sync and last_sync.get("message"):
                 col1.caption(last_sync["message"])
-            if col2.button(
+            sync_validation_error = _sync_validation_error(is_configured(), period_error)
+            sync_clicked = col2.button(
                 "Sync now",
                 key=f"sync_{row['account_id']}",
-                disabled=not is_configured() or bool(period_error),
+                help=sync_validation_error or tr("Start synchronization", "Запустить синхронизацию"),
                 use_container_width=True,
-            ):
+            )
+            if sync_clicked and sync_validation_error:
+                st.error(sync_validation_error)
+            elif sync_clicked:
                 with st.spinner(tr("Syncing...", "Синхронизация...")):
                     selected_region_code = instagram_profile_regions.get(selected_instagram_profile)
                     result = sync_ad_account(
