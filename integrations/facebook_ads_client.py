@@ -15,10 +15,12 @@ from core.i18n import tr
 GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "v21.0")
 GRAPH_API_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 
-# Graph API error codes that mean "you're being rate limited, back off and retry".
-RATE_LIMIT_ERROR_CODES = {4, 17, 32, 613}
+# Graph API errors that are safe to retry after waiting. Code 2 is a temporary
+# service failure; the others are throttling/rate-limit responses.
+RETRYABLE_ERROR_CODES = {2, 4, 17, 32, 613}
 MAX_RETRIES = 5
 INITIAL_BACKOFF_SECONDS = 2.0
+DATA_REDUCTION_DELAY_SECONDS = 1.0
 
 
 class FacebookApiError(Exception):
@@ -80,7 +82,7 @@ def _get(path: str, params: Optional[dict] = None) -> dict:
         error = payload.get("error", {})
         last_error = error
         code = error.get("code")
-        if code in RATE_LIMIT_ERROR_CODES and attempt < MAX_RETRIES - 1:
+        if code in RETRYABLE_ERROR_CODES and attempt < MAX_RETRIES - 1:
             time.sleep(backoff)
             backoff *= 2
             continue
@@ -109,42 +111,57 @@ def _get_all_pages(path: str, params: Optional[dict] = None) -> list[dict]:
 def _batch_get(paths: list[str]) -> list[dict]:
     """Run supported Graph batch GETs without the removed root ``ids`` parameter."""
     token = _access_token()
-    response = requests.post(
-        f"{GRAPH_API_BASE}/",
-        data={"batch": json.dumps([{"method": "GET", "relative_url": path} for path in paths])},
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=30,
-    )
-    try:
-        payload = response.json()
-    except ValueError:
-        response.raise_for_status()
-        raise FacebookApiError(
-            tr(
-                f"Facebook API returned an unreadable batch response (status {response.status_code}).",
-                f"Facebook API вернул нечитаемый пакетный ответ (status {response.status_code}).",
-            )
+    batch_data = {"batch": json.dumps([{"method": "GET", "relative_url": path} for path in paths])}
+    headers = {"Authorization": f"Bearer {token}"}
+    backoff = INITIAL_BACKOFF_SECONDS
+    for attempt in range(MAX_RETRIES):
+        response = requests.post(
+            f"{GRAPH_API_BASE}/",
+            data=batch_data,
+            headers=headers,
+            timeout=30,
         )
-
-    if not response.ok or isinstance(payload, dict):
-        error = payload.get("error", {}) if isinstance(payload, dict) else {}
-        code = error.get("code")
-        message = error.get("message", "Unknown Facebook API batch error")
-        raise FacebookApiError(f"Facebook API error ({code}): {message}", code=code)
-
-    results: list[dict] = []
-    for item in payload:
         try:
-            body = json.loads(item.get("body", "{}"))
-        except (TypeError, ValueError):
-            raise FacebookApiError("Facebook API returned an unreadable item in a batch response.")
-        if item.get("code", 500) >= 400 or "error" in body:
-            error = body.get("error", {})
+            payload = response.json()
+        except ValueError:
+            response.raise_for_status()
+            raise FacebookApiError(
+                tr(
+                    f"Facebook API returned an unreadable batch response (status {response.status_code}).",
+                    f"Facebook API вернул нечитаемый пакетный ответ (status {response.status_code}).",
+                )
+            )
+
+        batch_error: Optional[FacebookApiError] = None
+        results: list[dict] = []
+        if not response.ok or isinstance(payload, dict):
+            error = payload.get("error", {}) if isinstance(payload, dict) else {}
             code = error.get("code")
-            message = error.get("message", "Unknown Facebook API batch item error")
-            raise FacebookApiError(f"Facebook API error ({code}): {message}", code=code)
-        results.append(body)
-    return results
+            message = error.get("message", "Unknown Facebook API batch error")
+            batch_error = FacebookApiError(f"Facebook API error ({code}): {message}", code=code)
+        else:
+            for item in payload:
+                try:
+                    body = json.loads(item.get("body", "{}"))
+                except (TypeError, ValueError):
+                    raise FacebookApiError("Facebook API returned an unreadable item in a batch response.")
+                if item.get("code", 500) >= 400 or "error" in body:
+                    error = body.get("error", {})
+                    code = error.get("code")
+                    message = error.get("message", "Unknown Facebook API batch item error")
+                    batch_error = FacebookApiError(f"Facebook API error ({code}): {message}", code=code)
+                    break
+                results.append(body)
+
+        if batch_error is None:
+            return results
+        if batch_error.code in RETRYABLE_ERROR_CODES and attempt < MAX_RETRIES - 1:
+            time.sleep(backoff)
+            backoff *= 2
+            continue
+        raise batch_error
+
+    raise FacebookApiError("Facebook API batch retry limit exceeded.")
 
 
 def get_ads_by_ids(ad_ids: list[str], chunk_size: int = 50) -> list[dict]:
@@ -164,6 +181,7 @@ def get_ads_by_ids(ad_ids: list[str], chunk_size: int = 50) -> list[dict]:
         except FacebookApiError as exc:
             if exc.code != 1 or len(chunk) == 1:
                 raise
+            time.sleep(DATA_REDUCTION_DELAY_SECONDS)
             midpoint = len(chunk) // 2
             fetch_chunk(chunk[:midpoint])
             fetch_chunk(chunk[midpoint:])
@@ -199,6 +217,7 @@ def _get_insights_resilient(account_id: str, since: date, until: date) -> list[d
     except FacebookApiError as exc:
         if exc.code != 1 or since == until:
             raise
+        time.sleep(DATA_REDUCTION_DELAY_SECONDS)
         midpoint = since + timedelta(days=(until - since).days // 2)
         return [
             *_get_insights_resilient(account_id, since, midpoint),
