@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 
 import pandas as pd
@@ -17,6 +18,69 @@ from integrations.facebook_ads_sync import MAX_SYNC_DAYS, last_sync_for_account,
 FATIGUE_MIN_DAYS = 6
 FATIGUE_DECLINE_RATIO = 0.7
 MIN_ROWS_FOR_PERFORMANCE_FLAG = 4
+
+REGION_PROFILE_FALLBACKS = {
+    "arab": "novakid_mena",
+    "cz": "novakid_czech",
+    "de": "novakid_de",
+    "es": "novakidespana",
+    "fr": "novakid_france",
+    "global": "novakid_global",
+    "he": "novakid_israel",
+    "il": "novakid_israel",
+    "it": "novakiditalia",
+    "jp": "novakid_jp",
+    "kr": "novakid_korea",
+    "pl": "novakidpolska",
+    "ro": "novakid_romania",
+    "school": "novakidschool",
+    "tr": "novakidturkiye",
+    "ww": "novakid_global",
+}
+REGION_PROFILE_RE = re.compile(r"\br:([a-z0-9_-]+)\s*-\s*@?(novakid[a-z0-9_.]*)\b", re.IGNORECASE)
+REGION_CODE_RE = re.compile(r"\[r:([a-z0-9_-]+)\]", re.IGNORECASE)
+
+
+def _profile_from_ad_names(*names: object) -> str | None:
+    """Resolve a Novakid Instagram username from the ad naming convention."""
+    for value in names:
+        text = str(value or "").strip()
+        explicit = REGION_PROFILE_RE.search(text)
+        if explicit:
+            return explicit.group(2).lower()
+    for value in names:
+        region = REGION_CODE_RE.search(str(value or ""))
+        if region:
+            return REGION_PROFILE_FALLBACKS.get(region.group(1).lower())
+    return None
+
+
+def _instagram_profile_options(account_ids: list[str]) -> list[str]:
+    if not account_ids:
+        return []
+    placeholders = ",".join(["?"] * len(account_ids))
+    rows = db_df(
+        f"""SELECT DISTINCT c.name AS campaign_name, a.name AS ad_name, ia.username
+            FROM fb_campaigns c
+            JOIN fb_ads a ON a.campaign_id = c.campaign_id
+            LEFT JOIN fb_creatives cr ON cr.ad_id = a.ad_id
+            LEFT JOIN fb_instagram_accounts ia
+              ON ia.account_id = c.account_id
+             AND ia.instagram_user_id = cr.instagram_user_id
+            WHERE c.account_id IN ({placeholders})""",
+        account_ids,
+    )
+    profiles: set[str] = set()
+    for _, row in rows.iterrows():
+        api_username = row.get("username")
+        profile = (
+            str(api_username).strip().lstrip("@").lower()
+            if pd.notna(api_username) and str(api_username).strip()
+            else _profile_from_ad_names(row.get("campaign_name"), row.get("ad_name"))
+        )
+        if profile:
+            profiles.add(profile)
+    return sorted(profiles)
 
 
 def _save_ad_account(account_id: str, label: str, is_active: bool) -> None:
@@ -45,7 +109,7 @@ def _save_creative_tags(df: pd.DataFrame) -> None:
 
 
 def _ads_overview_df(
-    account_ids: list[str], since: date, until: date, instagram_user_id: str | None = None
+    account_ids: list[str], since: date, until: date, instagram_profile: str | None = None
 ) -> pd.DataFrame:
     if not account_ids:
         return pd.DataFrame()
@@ -80,7 +144,6 @@ def _ads_overview_df(
         WHERE c.account_id IN ({placeholders})
           AND i.date_start >= ?
           AND i.date_stop <= ?
-          {"AND cr.instagram_user_id = ?" if instagram_user_id else ""}
         GROUP BY
             c.account_id,
             c.campaign_id,
@@ -98,10 +161,20 @@ def _ads_overview_df(
             ia.username
         ORDER BY spend DESC
     """
-    params = [*account_ids, since.isoformat(), until.isoformat()]
-    if instagram_user_id:
-        params.append(instagram_user_id)
-    return db_df(query, params)
+    result = db_df(query, [*account_ids, since.isoformat(), until.isoformat()])
+    if result.empty:
+        return result
+
+    def resolve_profile(row: pd.Series) -> str | None:
+        api_username = row.get("instagram_username")
+        if pd.notna(api_username) and str(api_username).strip():
+            return str(api_username).strip().lstrip("@").lower()
+        return _profile_from_ad_names(row.get("campaign_name"), row.get("ad_name"))
+
+    result["instagram_username"] = result.apply(resolve_profile, axis=1)
+    if instagram_profile:
+        result = result[result["instagram_username"] == instagram_profile]
+    return result
 
 
 def _fatigued_ad_ids(ad_ids: list[str], since: date, until: date) -> set[str]:
@@ -245,37 +318,18 @@ def page_facebook_ads(user: dict) -> None:
         st.error(period_error)
 
     account_ids = accounts_df["account_id"].tolist()
-    account_placeholders = ",".join(["?"] * len(account_ids))
-    instagram_accounts = db_df(
-        f"""SELECT instagram_user_id, MAX(username) AS username
-            FROM (
-                SELECT instagram_user_id, username
-                FROM fb_instagram_accounts
-                WHERE account_id IN ({account_placeholders})
-                UNION ALL
-                SELECT cr.instagram_user_id, NULL AS username
-                FROM fb_creatives cr
-                JOIN fb_ads a ON a.ad_id = cr.ad_id
-                JOIN fb_campaigns c ON c.campaign_id = a.campaign_id
-                WHERE c.account_id IN ({account_placeholders})
-                  AND cr.instagram_user_id IS NOT NULL
-            ) profiles
-            GROUP BY instagram_user_id
-            ORDER BY username, instagram_user_id""",
-        [*account_ids, *account_ids],
-    )
-    region_options: dict[str | None, str] = {None: tr("All Instagram accounts", "Все Instagram-аккаунты")}
-    for _, instagram_account in instagram_accounts.iterrows():
-        instagram_id = str(instagram_account["instagram_user_id"])
-        username = instagram_account.get("username")
-        region_options[instagram_id] = f"@{username}" if pd.notna(username) and str(username).strip() else instagram_id
-    selected_instagram_id = st.selectbox(
+    instagram_profiles = _instagram_profile_options(account_ids)
+    region_options: dict[str | None, str] = {
+        None: tr("All Instagram accounts", "Все Instagram-аккаунты"),
+        **{profile: f"@{profile}" for profile in instagram_profiles},
+    }
+    selected_instagram_profile = st.selectbox(
         tr("Instagram account / region", "Instagram-аккаунт / регион"),
         options=list(region_options),
         format_func=lambda value: region_options[value],
         key="fb_ads_instagram_account",
     )
-    if instagram_accounts.empty:
+    if not instagram_profiles:
         st.caption(
             tr(
                 "Run the first sync for the selected period to discover Instagram accounts connected to this ad account.",
@@ -311,7 +365,7 @@ def page_facebook_ads(user: dict) -> None:
                 st.rerun()
 
     st.markdown("### " + tr("Campaigns And Ads", "Кампании и объявления"))
-    overview = _ads_overview_df(account_ids, since, until, selected_instagram_id)
+    overview = _ads_overview_df(account_ids, since, until, selected_instagram_profile)
     if overview.empty:
         st.info(tr("No data yet. Run sync above.", "Пока нет данных. Запустите синхронизацию выше."))
         return
