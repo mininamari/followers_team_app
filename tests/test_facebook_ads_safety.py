@@ -6,6 +6,8 @@ import unittest
 from datetime import date
 from unittest.mock import Mock, patch
 
+import requests
+
 from integrations import facebook_ads_client as client
 from integrations.facebook_ads_sync import _acquire_sync_lock, _log_start
 
@@ -24,6 +26,20 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         self.assertNotIn("access_token", request_get.call_args.args[0])
         self.assertNotIn("access_token", kwargs["params"])
         self.assertEqual(kwargs["headers"], {"Authorization": "Bearer top-secret"})
+
+    @patch.dict(os.environ, {"META_ACCESS_TOKEN": "top-secret"})
+    @patch.object(client.time, "sleep")
+    @patch.object(client.requests, "get")
+    def test_connection_reset_waits_and_retries(self, request_get: Mock, sleep: Mock) -> None:
+        success = Mock(ok=True)
+        success.json.return_value = {"data": []}
+        request_get.side_effect = [requests.ConnectionError("connection reset"), success]
+
+        result = client._get("act_123/insights")
+
+        self.assertEqual(result, {"data": []})
+        sleep.assert_called_once_with(2.0)
+        self.assertEqual(request_get.call_count, 2)
 
     @patch.object(client, "_batch_get")
     def test_only_selected_ads_and_creatives_are_requested(self, batch_get: Mock) -> None:
@@ -91,6 +107,18 @@ class FacebookAdsSafetyTests(unittest.TestCase):
         self.assertIn('{"since":"2026-09-01","until":"2026-09-04"}', requested_ranges)
         self.assertIn('{"since":"2026-09-08","until":"2026-09-10"}', requested_ranges)
         sleep.assert_called_once_with(client.DATA_REDUCTION_DELAY_SECONDS)
+
+    @patch.object(client, "_get_all_pages")
+    def test_insights_filter_selected_region_at_api_level(self, get_all_pages: Mock) -> None:
+        get_all_pages.return_value = []
+
+        client.get_insights("act_123", "2026-09-01", "2026-09-01", region_code="es")
+
+        params = get_all_pages.call_args.args[1]
+        self.assertEqual(
+            params["filtering"],
+            '[{"field":"campaign.name","operator":"CONTAIN","value":"[r:es]"}]',
+        )
 
     @patch.object(client.time, "sleep")
     @patch.object(client, "_batch_get")

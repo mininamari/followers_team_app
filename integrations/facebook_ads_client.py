@@ -69,7 +69,19 @@ def _get(path: str, params: Optional[dict] = None) -> dict:
     backoff = INITIAL_BACKOFF_SECONDS
     last_error: Optional[dict] = None
     for attempt in range(MAX_RETRIES):
-        response = requests.get(url, params=query, headers=headers, timeout=30)
+        try:
+            response = requests.get(url, params=query, headers=headers, timeout=30)
+        except requests.RequestException as exc:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            raise FacebookApiError(
+                tr(
+                    f"Facebook API network error after {MAX_RETRIES} attempts: {exc}",
+                    f"Сетевая ошибка Facebook API после {MAX_RETRIES} попыток: {exc}",
+                )
+            ) from exc
         try:
             payload = response.json()
         except ValueError:
@@ -115,12 +127,24 @@ def _batch_get(paths: list[str]) -> list[dict]:
     headers = {"Authorization": f"Bearer {token}"}
     backoff = INITIAL_BACKOFF_SECONDS
     for attempt in range(MAX_RETRIES):
-        response = requests.post(
-            f"{GRAPH_API_BASE}/",
-            data=batch_data,
-            headers=headers,
-            timeout=30,
-        )
+        try:
+            response = requests.post(
+                f"{GRAPH_API_BASE}/",
+                data=batch_data,
+                headers=headers,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            raise FacebookApiError(
+                tr(
+                    f"Facebook API network error after {MAX_RETRIES} attempts: {exc}",
+                    f"Сетевая ошибка Facebook API после {MAX_RETRIES} попыток: {exc}",
+                )
+            ) from exc
         try:
             payload = response.json()
         except ValueError:
@@ -199,33 +223,49 @@ def get_instagram_accounts(account_id: str) -> list[dict]:
     return payload.get("instagram_accounts", {}).get("data", [])
 
 
-def _get_insights_window(account_id: str, since: date, until: date) -> list[dict]:
+def _get_insights_window(
+    account_id: str, since: date, until: date, region_code: str | None = None
+) -> list[dict]:
+    params = {
+        "level": "ad",
+        "fields": "ad_id,date_start,date_stop,spend,impressions,reach,clicks",
+        "time_range": f'{{"since":"{since.isoformat()}","until":"{until.isoformat()}"}}',
+        "time_increment": 1,
+    }
+    if region_code:
+        params["filtering"] = json.dumps(
+            [{"field": "campaign.name", "operator": "CONTAIN", "value": f"[r:{region_code}]"}],
+            separators=(",", ":"),
+        )
     return _get_all_pages(
         f"{account_id}/insights",
-        {
-            "level": "ad",
-            "fields": "ad_id,date_start,date_stop,spend,impressions,reach,clicks",
-            "time_range": f'{{"since":"{since.isoformat()}","until":"{until.isoformat()}"}}',
-            "time_increment": 1,
-        },
+        params,
     )
 
 
-def _get_insights_resilient(account_id: str, since: date, until: date) -> list[dict]:
+def _get_insights_resilient(
+    account_id: str, since: date, until: date, region_code: str | None = None
+) -> list[dict]:
     try:
-        return _get_insights_window(account_id, since, until)
+        return _get_insights_window(account_id, since, until, region_code)
     except FacebookApiError as exc:
         if exc.code != 1 or since == until:
             raise
         time.sleep(DATA_REDUCTION_DELAY_SECONDS)
         midpoint = since + timedelta(days=(until - since).days // 2)
         return [
-            *_get_insights_resilient(account_id, since, midpoint),
-            *_get_insights_resilient(account_id, midpoint + timedelta(days=1), until),
+            *_get_insights_resilient(account_id, since, midpoint, region_code),
+            *_get_insights_resilient(account_id, midpoint + timedelta(days=1), until, region_code),
         ]
 
 
-def get_insights(account_id: str, since: str, until: str, window_days: int = 7) -> list[dict]:
+def get_insights(
+    account_id: str,
+    since: str,
+    until: str,
+    window_days: int = 7,
+    region_code: str | None = None,
+) -> list[dict]:
     """Fetch daily insights in small windows and split overloaded requests further."""
     start = date.fromisoformat(since)
     end = date.fromisoformat(until)
@@ -233,6 +273,6 @@ def get_insights(account_id: str, since: str, until: str, window_days: int = 7) 
     window_start = start
     while window_start <= end:
         window_end = min(window_start + timedelta(days=window_days - 1), end)
-        results.extend(_get_insights_resilient(account_id, window_start, window_end))
+        results.extend(_get_insights_resilient(account_id, window_start, window_end, region_code))
         window_start = window_end + timedelta(days=1)
     return results

@@ -90,7 +90,14 @@ def _log_finish(conn, log_id: int, status: str, message: str) -> None:
     conn.commit()
 
 
-def sync_ad_account(account_id: str, since: date, until: date, triggered_by: str = "system") -> SyncResult:
+def sync_ad_account(
+    account_id: str,
+    since: date,
+    until: date,
+    triggered_by: str = "system",
+    region_code: str | None = None,
+    profile_name: str | None = None,
+) -> SyncResult:
     result = SyncResult(account_id=account_id)
     if since > until:
         result.status = "error"
@@ -110,7 +117,12 @@ def sync_ad_account(account_id: str, since: date, until: date, triggered_by: str
         try:
             updated_at = now_utc()
 
-            insights = get_insights(account_id, since.isoformat(), until.isoformat())
+            insights = get_insights(
+                account_id,
+                since.isoformat(),
+                until.isoformat(),
+                region_code=region_code,
+            )
             ads = get_ads_by_ids([row["ad_id"] for row in insights if row.get("ad_id")])
             campaigns_by_id = {
                 ad["campaign"]["id"]: ad["campaign"]
@@ -229,6 +241,8 @@ def sync_ad_account(account_id: str, since: date, until: date, triggered_by: str
                 f"{result.campaigns} campaigns, {result.ads} ads, "
                 f"{result.creatives} creatives, {result.insight_rows} insight rows"
             )
+            if profile_name:
+                result.message = f"@{profile_name}: {result.message}"
             _log_finish(conn, log_id, "ok", result.message)
         except FacebookApiError as exc:
             conn.rollback()
