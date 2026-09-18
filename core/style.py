@@ -229,6 +229,12 @@ div.stButton > button:hover, div.stDownloadButton > button:hover, [data-testid="
     transform: translate(2px, 2px);
     box-shadow: 2px 2px 0 var(--mark-ink) !important;
 }
+div.stButton > button:disabled, div.stDownloadButton > button:disabled, [data-testid="stFormSubmitButton"] button:disabled {
+    cursor: not-allowed !important;
+    opacity: .5 !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
 [data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-baseweb="textarea"] > div {
     background: var(--mark-paper-light) !important;
     border-color: var(--mark-ink) !important;
