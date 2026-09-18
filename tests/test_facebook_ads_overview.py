@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from screens.facebook_ads import _ads_overview_df, _profile_from_ad_names
+from screens.facebook_ads import _ads_overview_df, _instagram_profile_options, _profile_from_ad_names
 
 
 class FacebookAdsOverviewTests(unittest.TestCase):
@@ -53,6 +53,20 @@ class FacebookAdsOverviewTests(unittest.TestCase):
 
     def test_known_region_without_profile_suffix_uses_fallback(self) -> None:
         self.assertEqual(_profile_from_ad_names("[r:pl][c:smm] campaign"), "novakidpolska")
+
+    @patch("screens.facebook_ads.db_df")
+    def test_profile_options_keep_region_needed_for_sync(self, db_df) -> None:
+        db_df.return_value = pd.DataFrame(
+            [
+                {
+                    "campaign_name": "[r:es][c:smm] r:es - novakidespana",
+                    "ad_name": "Spanish ad",
+                    "username": None,
+                }
+            ]
+        )
+
+        self.assertEqual(_instagram_profile_options(["act_123"]), {"novakidespana": "es"})
 
     @patch("screens.facebook_ads.db_df")
     def test_overview_filters_by_resolved_profile_name(self, db_df) -> None:

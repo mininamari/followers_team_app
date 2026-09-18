@@ -39,25 +39,47 @@ REGION_PROFILE_FALLBACKS = {
 }
 REGION_PROFILE_RE = re.compile(r"\br:([a-z0-9_-]+)\s*-\s*@?(novakid[a-z0-9_.]*)\b", re.IGNORECASE)
 REGION_CODE_RE = re.compile(r"\[r:([a-z0-9_-]+)\]", re.IGNORECASE)
+PROFILE_REGION_DEFAULTS = {
+    "novakid_mena": "arab",
+    "novakid_czech": "cz",
+    "novakid_de": "de",
+    "novakidespana": "es",
+    "novakid_france": "fr",
+    "novakid_global": "global",
+    "novakid_israel": "il",
+    "novakiditalia": "it",
+    "novakid_jp": "jp",
+    "novakid_korea": "kr",
+    "novakidpolska": "pl",
+    "novakid_romania": "ro",
+    "novakidschool": "school",
+    "novakidturkiye": "tr",
+}
 
 
-def _profile_from_ad_names(*names: object) -> str | None:
-    """Resolve a Novakid Instagram username from the ad naming convention."""
+def _region_profile_from_ad_names(*names: object) -> tuple[str, str | None] | None:
     for value in names:
         text = str(value or "").strip()
         explicit = REGION_PROFILE_RE.search(text)
         if explicit:
-            return explicit.group(2).lower()
+            return explicit.group(1).lower(), explicit.group(2).lower()
     for value in names:
         region = REGION_CODE_RE.search(str(value or ""))
         if region:
-            return REGION_PROFILE_FALLBACKS.get(region.group(1).lower())
+            region_code = region.group(1).lower()
+            return region_code, REGION_PROFILE_FALLBACKS.get(region_code)
     return None
 
 
-def _instagram_profile_options(account_ids: list[str]) -> list[str]:
+def _profile_from_ad_names(*names: object) -> str | None:
+    """Resolve a Novakid Instagram username from the ad naming convention."""
+    match = _region_profile_from_ad_names(*names)
+    return match[1] if match else None
+
+
+def _instagram_profile_options(account_ids: list[str]) -> dict[str, str]:
     if not account_ids:
-        return []
+        return {}
     placeholders = ",".join(["?"] * len(account_ids))
     rows = db_df(
         f"""SELECT DISTINCT c.name AS campaign_name, a.name AS ad_name, ia.username
@@ -70,17 +92,19 @@ def _instagram_profile_options(account_ids: list[str]) -> list[str]:
             WHERE c.account_id IN ({placeholders})""",
         account_ids,
     )
-    profiles: set[str] = set()
+    profiles: dict[str, str] = {}
     for _, row in rows.iterrows():
+        naming_match = _region_profile_from_ad_names(row.get("campaign_name"), row.get("ad_name"))
         api_username = row.get("username")
         profile = (
             str(api_username).strip().lstrip("@").lower()
             if pd.notna(api_username) and str(api_username).strip()
-            else _profile_from_ad_names(row.get("campaign_name"), row.get("ad_name"))
+            else naming_match[1] if naming_match else None
         )
-        if profile:
-            profiles.add(profile)
-    return sorted(profiles)
+        region_code = naming_match[0] if naming_match else PROFILE_REGION_DEFAULTS.get(profile or "")
+        if profile and region_code:
+            profiles[profile] = region_code
+    return dict(sorted(profiles.items()))
 
 
 def _save_ad_account(account_id: str, label: str, is_active: bool) -> None:
@@ -318,10 +342,10 @@ def page_facebook_ads(user: dict) -> None:
         st.error(period_error)
 
     account_ids = accounts_df["account_id"].tolist()
-    instagram_profiles = _instagram_profile_options(account_ids)
+    instagram_profile_regions = _instagram_profile_options(account_ids)
     region_options: dict[str | None, str] = {
         None: tr("All Instagram accounts", "Все Instagram-аккаунты"),
-        **{profile: f"@{profile}" for profile in instagram_profiles},
+        **{profile: f"@{profile}" for profile in instagram_profile_regions},
     }
     selected_instagram_profile = st.selectbox(
         tr("Instagram account / region", "Instagram-аккаунт / регион"),
@@ -329,7 +353,15 @@ def page_facebook_ads(user: dict) -> None:
         format_func=lambda value: region_options[value],
         key="fb_ads_instagram_account",
     )
-    if not instagram_profiles:
+    if selected_instagram_profile:
+        selected_region_code = instagram_profile_regions[selected_instagram_profile]
+        st.caption(
+            tr(
+                f"Sync scope: only @{selected_instagram_profile} campaigns marked [r:{selected_region_code}].",
+                f"Объём синхронизации: только кампании @{selected_instagram_profile} с меткой [r:{selected_region_code}].",
+            )
+        )
+    if not instagram_profile_regions:
         st.caption(
             tr(
                 "Run the first sync for the selected period to discover Instagram accounts connected to this ad account.",
@@ -355,7 +387,15 @@ def page_facebook_ads(user: dict) -> None:
                 use_container_width=True,
             ):
                 with st.spinner(tr("Syncing...", "Синхронизация...")):
-                    result = sync_ad_account(row["account_id"], since, until, triggered_by=user["username"])
+                    selected_region_code = instagram_profile_regions.get(selected_instagram_profile)
+                    result = sync_ad_account(
+                        row["account_id"],
+                        since,
+                        until,
+                        triggered_by=user["username"],
+                        region_code=selected_region_code,
+                        profile_name=selected_instagram_profile,
+                    )
                 if result.status == "ok":
                     st.success(result.message)
                 elif result.status == "skipped":
