@@ -71,8 +71,8 @@ def _parse_utc(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
 
 
-def _acquire_sync_lock(conn, account_id: str) -> tuple[bool, str]:
-    """Atomically acquire an account lock and enforce a short sync cooldown."""
+def _acquire_sync_lock(conn, account_id: str, enforce_cooldown: bool = True) -> tuple[bool, str]:
+    """Atomically acquire an account lock and, by default, enforce a short sync cooldown."""
     now = datetime.utcnow()
     stale_before = (now - timedelta(minutes=SYNC_LOCK_STALE_MINUTES)).isoformat(timespec="seconds") + "Z"
     conn.execute("DELETE FROM fb_sync_locks WHERE acquired_at < ?", (stale_before,))
@@ -87,6 +87,9 @@ def _acquire_sync_lock(conn, account_id: str) -> tuple[bool, str]:
     if cur.fetchone() is None:
         conn.commit()
         return False, "Synchronization for this ad account is already running."
+    if not enforce_cooldown:
+        conn.commit()
+        return True, ""
 
     last = conn.execute(
         """
@@ -140,6 +143,7 @@ def sync_ad_account(
     triggered_by: str = "system",
     region_code: str | None = None,
     profile_name: str | None = None,
+    enforce_cooldown: bool = True,
 ) -> SyncResult:
     result = SyncResult(account_id=account_id)
     if since > until:
@@ -151,7 +155,7 @@ def sync_ad_account(
         result.message = f"Select a period of no more than {MAX_SYNC_DAYS} days."
         return result
     with connect_db() as conn:
-        acquired, reason = _acquire_sync_lock(conn, account_id)
+        acquired, reason = _acquire_sync_lock(conn, account_id, enforce_cooldown)
         if not acquired:
             result.status = "skipped"
             result.message = reason
@@ -218,8 +222,8 @@ def sync_ad_account(
                     """
                     INSERT INTO fb_creatives(
                         creative_id, ad_id, title, body, image_url, thumbnail_url,
-                        video_id, instagram_user_id, updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?)
+                        video_id, instagram_user_id, effective_instagram_media_id, updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(creative_id) DO UPDATE SET
                         ad_id=excluded.ad_id,
                         title=excluded.title,
@@ -228,12 +232,13 @@ def sync_ad_account(
                         thumbnail_url=excluded.thumbnail_url,
                         video_id=excluded.video_id,
                         instagram_user_id=excluded.instagram_user_id,
+                        effective_instagram_media_id=excluded.effective_instagram_media_id,
                         updated_at=excluded.updated_at
                     """,
                     (
                         creative["id"], ad["id"], creative.get("title"), creative.get("body"),
                         creative.get("image_url"), creative.get("thumbnail_url"), creative.get("video_id"),
-                        creative.get("instagram_user_id"), updated_at,
+                        creative.get("instagram_user_id"), creative.get("effective_instagram_media_id"), updated_at,
                     ),
                 )
                 result.creatives += 1

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import sqlite3
 import tempfile
 import unittest
@@ -11,16 +10,6 @@ from core import csv_import
 
 
 PERIOD = ("2026-07-01", "2026-07-31")
-
-
-class Upload:
-    name = "july.csv"
-
-    def __init__(self, text: str):
-        self._data = text.encode("utf-8-sig")
-
-    def getvalue(self) -> bytes:
-        return self._data
 
 
 class PaidOnlyFollowerTests(unittest.TestCase):
@@ -170,36 +159,6 @@ class PaidOnlyFollowerTests(unittest.TestCase):
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM final_results WHERE publication_id='matched'").fetchone()
         self.assertEqual(row["meta_followers"], row["pr_followers"] + row["final_followers"])
-
-    def test_add_only_keeps_existing_manual_row_and_adds_unmatched_as_paid_only(self) -> None:
-        self.seed_matched()
-        csv_import.recalc_final("novakiditalia", *PERIOD)
-        source = "\n".join(
-            [
-                "Дата начала отчетности,Окончание отчетности,Название объявления,Название Страницы,Подписки IG,Потраченная сумма (USD)",
-                "2026-07-01,2026-07-31,matched,Novakid Italia,80,150",
-                "2026-07-01,2026-07-31,paid-only,Novakid Italia,40,80",
-            ]
-        )
-        with patch.object(csv_import, "save_uploaded_file", return_value="/tmp/july.csv"):
-            saved, warnings = csv_import.import_pr(
-                Upload(source),
-                {"username": "admin", "role": "admin"},
-                account="",
-                auto_detect_accounts=True,
-                page_account_map={"Novakid Italia": "novakiditalia"},
-                add_only=True,
-            )
-
-        self.assertEqual(saved, 1)
-        self.assertTrue(any("Paid-only" in warning for warning in warnings))
-        with self.connect() as conn:
-            matched = conn.execute("SELECT pr_followers FROM pr_ads WHERE publication_id='matched'").fetchone()
-            override = conn.execute("SELECT manual_pr_followers FROM follower_overrides WHERE publication_id='matched'").fetchone()
-        self.assertEqual(matched[0], 60)
-        self.assertEqual(override[0], 70)
-        monthly = self.monthly()
-        self.assertEqual((monthly["total_followers"], monthly["paid_followers"], monthly["organic_followers"]), (140, 110, 30))
 
 
 if __name__ == "__main__":

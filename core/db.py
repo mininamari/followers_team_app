@@ -231,6 +231,7 @@ def init_db() -> None:
                 thumbnail_url TEXT,
                 video_id TEXT,
                 instagram_user_id TEXT,
+                effective_instagram_media_id TEXT,
                 tags TEXT,
                 updated_at TEXT NOT NULL
             )
@@ -534,6 +535,8 @@ def ensure_schema_columns(conn) -> None:
         conn.execute("ALTER TABLE fb_creatives ADD COLUMN tags TEXT")
     if "instagram_user_id" not in creative_cols:
         conn.execute("ALTER TABLE fb_creatives ADD COLUMN instagram_user_id TEXT")
+    if "effective_instagram_media_id" not in creative_cols:
+        conn.execute("ALTER TABLE fb_creatives ADD COLUMN effective_instagram_media_id TEXT")
 
     insight_cols = _table_columns(conn, "fb_insights")
     if "instagram_followers" not in insight_cols:

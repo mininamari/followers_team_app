@@ -63,7 +63,7 @@ def _latest_follower_rows(results: pd.DataFrame) -> pd.DataFrame:
 
 
 def merge_posts_with_followers(api_posts: pd.DataFrame, results: pd.DataFrame) -> pd.DataFrame:
-    """Join API post statistics with followers calculated from Meta/PR uploads.
+    """Join API post statistics with followers calculated from Meta uploads and ad data.
 
     Posts match by Instagram media ID (the Meta export's publication ID) and fall
     back to the permalink shortcode. Export posts missing from the API are kept
@@ -113,7 +113,7 @@ def merge_posts_with_followers(api_posts: pd.DataFrame, results: pd.DataFrame) -
         })
 
     for row in followers.to_dict("records"):
-        # Paid-only PR rows have no Meta publication, so they are not posts.
+        # Paid-only ad rows have no Meta publication, so they are not posts.
         if str(row["publication_id"]) in matched_ids or pd.isna(row.get("meta_uploaded_by")):
             continue
         published_at = row.get("publication_date")
@@ -241,8 +241,8 @@ def page_organic_posts(user: dict) -> None:
     hero(
         tr("Organic posts", "Органика: посты"),
         tr(
-            "Statistics of every Instagram post from the API next to total, paid and organic followers calculated from Meta and PR uploads.",
-            "Статистика всех постов Instagram из API рядом с total, paid и organic подписчиками, рассчитанными из выгрузок Meta и PR.",
+            "Statistics of every Instagram post from the API next to total, paid and organic followers calculated from Meta uploads and the ad account.",
+            "Статистика всех постов Instagram из API рядом с total, paid и organic подписчиками, рассчитанными из выгрузок Meta и рекламного кабинета.",
         ),
         ["Reach", "Engagement", "Followers organic", "Per 1k reach"],
     )
@@ -355,7 +355,7 @@ def page_organic_posts(user: dict) -> None:
             "followers_paid": st.column_config.NumberColumn("Followers paid", format="%d"),
             "followers_organic": st.column_config.NumberColumn(
                 "Followers organic", format="%d",
-                help=tr("Calculated from uploads: Meta follows minus PR paid.", "Рассчитано из выгрузок: подписки Meta минус paid из PR."),
+                help=tr("Calculated: Meta follows minus paid follows from the ad account.", "Рассчитано: подписки Meta минус paid из рекламного кабинета."),
             ),
             "organic_per_1k_reach": st.column_config.NumberColumn(tr("Organic / 1k reach", "Organic / 1k охвата"), format="%.2f"),
             "source": tr("Source", "Источник"),

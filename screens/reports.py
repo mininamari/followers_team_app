@@ -18,8 +18,8 @@ def page_report(user: dict) -> None:
     hero(
         "Reports",
         tr(
-            "Follower report with monthly totals and post-level Meta/PR matching. Monthly corrections feed the Dashboard.",
-            "Отчёт по подписчикам с месячными итогами и матчинга Meta + PR на уровне постов. Месячные корректировки попадают в Dashboard.",
+            "Follower report with monthly totals and post-level Meta/ads matching. Monthly corrections feed the Dashboard.",
+            "Отчёт по подписчикам с месячными итогами и матчинга Meta + реклама на уровне постов. Месячные корректировки попадают в Dashboard.",
         ),
         ["Followers total − followers paid", "Monthly manual correction", "Export CSV / Excel"],
     )
@@ -85,9 +85,9 @@ def page_report(user: dict) -> None:
         )
         adjustment.caption(
             tr(
-                "Select the rows you need first. They will appear in a separate block above where you can enter the actual PR follower count. "
+                "Select the rows you need first. They will appear in a separate block above where you can enter the actual paid follower count. "
                 "Rows with warnings are selected automatically. Clear the manual field and save the row to return to the CSV value.",
-                "Сначала отметьте нужные строки. Они появятся в отдельном блоке сверху, где можно указать фактическое число подписчиков PR. "
+                "Сначала отметьте нужные строки. Они появятся в отдельном блоке сверху, где можно указать фактическое число paid-подписчиков. "
                 "Строки с предупреждением выбраны автоматически. "
                 "Чтобы вернуть значение из CSV, очистите ручное поле и сохраните строку.",
             )
@@ -201,7 +201,7 @@ def page_report(user: dict) -> None:
             "spend_usd": st.column_config.NumberColumn("Spend, USD", format="$%.2f"),
             "cpf_usd": st.column_config.NumberColumn("CPF, USD", format="$%.2f"),
             "meta_uploaded_by": tr("Meta uploaded by", "Meta загрузил"),
-            "pr_uploaded_by": tr("PR uploaded by", "PR загрузил"),
+            "pr_uploaded_by": tr("Paid loaded by", "Paid загрузил"),
             "override_updated_by": tr("Manual value updated by", "Ручное значение обновил"),
             "updated_at": tr("Updated at", "Обновлено"),
         },

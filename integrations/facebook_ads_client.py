@@ -204,7 +204,7 @@ def get_ads_by_ids(ad_ids: list[str], chunk_size: int = 50) -> list[dict]:
             fields = (
                 "id,name,status,adset_id,"
                 "campaign{id,name,objective,status,created_time},"
-                "creative{id,title,body,image_url,thumbnail_url,video_id,instagram_user_id}"
+                "creative{id,title,body,image_url,thumbnail_url,video_id,instagram_user_id,effective_instagram_media_id}"
             )
             payload = _batch_get(
                 [f"{ad_id}?{urlencode({'fields': fields})}" for ad_id in chunk]

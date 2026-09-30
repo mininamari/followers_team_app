@@ -28,12 +28,12 @@ ROLE_LABELS = {
 }
 PERMISSIONS = {
     ROLE_ADMIN: {
-        "view_dashboard", "view_reports", "export_reports", "upload_meta", "upload_pr",
+        "view_dashboard", "view_reports", "export_reports", "upload_meta",
         "edit_reports", "view_history", "manage_users", "manage_backups",
         "view_fb_ads", "manage_fb_ads", "sync_instagram",
     },
     ROLE_MANAGER: {
-        "view_dashboard", "view_reports", "export_reports", "upload_meta", "upload_pr",
+        "view_dashboard", "view_reports", "export_reports", "upload_meta",
         "edit_reports", "view_history",
         "view_fb_ads", "manage_fb_ads", "sync_instagram",
     },
@@ -57,24 +57,6 @@ META_COLUMN_ALIASES = {
     META_PUBLISHED_AT_COL: ["Publish time"],
 }
 
-PR_START_COL = "Дата начала отчетности"
-PR_END_COL = "Окончание отчетности"
-PR_AD_NAME_COL = "Название объявления"
-PR_PAGE_COL = "Название Страницы"
-PR_FOLLOWERS_COL = "Подписки в Instagram"
-PR_SPEND_COL = "Потраченная сумма (USD)"
-PR_COLUMN_ALIASES = {
-    PR_PAGE_COL: ["Название страницы", "Page name", "Page Name"],
-    PR_FOLLOWERS_COL: [
-        "Подписчики Instagram",
-        "подписчики Instagram",
-        "Подписчики IG",
-        "подписчики IG",
-        "Подписки IG",
-        "подписки IG",
-    ],
-}
-
 # Historical import aliases that must resolve to the real Instagram usernames.
 ACCOUNT_ALIASES = {
     "novakid_italia": "novakiditalia",
@@ -82,7 +64,6 @@ ACCOUNT_ALIASES = {
 }
 
 REQUIRED_META = [META_ID_COL, META_FOLLOWERS_COL, META_LINK_COL, META_ACCOUNT_USERNAME_COL, META_PUBLISHED_AT_COL]
-REQUIRED_PR = [PR_START_COL, PR_END_COL, PR_AD_NAME_COL, PR_FOLLOWERS_COL, PR_SPEND_COL]
 MONTH_NAMES = {
     "01": "January",
     "02": "February",
