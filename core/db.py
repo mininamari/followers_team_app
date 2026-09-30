@@ -20,6 +20,7 @@ from core.config import (
     META_ID_COL,
     META_REACH_COL,
     ROLE_ADMIN,
+    ROLE_MANAGER,
     ROLES,
     UPLOAD_DIR,
     now_utc,
