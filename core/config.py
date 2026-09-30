@@ -30,12 +30,12 @@ PERMISSIONS = {
     ROLE_ADMIN: {
         "view_dashboard", "view_reports", "export_reports", "upload_meta", "upload_pr",
         "edit_reports", "view_history", "manage_users", "manage_backups",
-        "view_fb_ads", "manage_fb_ads",
+        "view_fb_ads", "manage_fb_ads", "sync_instagram",
     },
     ROLE_MANAGER: {
         "view_dashboard", "view_reports", "export_reports", "upload_meta", "upload_pr",
         "edit_reports", "view_history",
-        "view_fb_ads", "manage_fb_ads",
+        "view_fb_ads", "manage_fb_ads", "sync_instagram",
     },
     ROLE_VIEWER: {"view_dashboard", "view_reports", "export_reports", "view_history", "view_fb_ads"},
 }

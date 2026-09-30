@@ -120,8 +120,12 @@ def _get_all_pages(path: str, params: Optional[dict] = None) -> list[dict]:
     return results
 
 
-def _batch_get(paths: list[str]) -> list[dict]:
-    """Run supported Graph batch GETs without the removed root ``ids`` parameter."""
+def _batch_get(paths: list[str], allow_item_errors: bool = False) -> list[dict]:
+    """Run supported Graph batch GETs without the removed root ``ids`` parameter.
+
+    With ``allow_item_errors`` a non-retryable failure of a single item is
+    returned in place as ``{"error": {...}}`` instead of failing the batch.
+    """
     token = _access_token()
     batch_data = {"batch": json.dumps([{"method": "GET", "relative_url": path} for path in paths])}
     headers = {"Authorization": f"Bearer {token}"}
@@ -170,8 +174,11 @@ def _batch_get(paths: list[str]) -> list[dict]:
                 except (TypeError, ValueError):
                     raise FacebookApiError("Facebook API returned an unreadable item in a batch response.")
                 if item.get("code", 500) >= 400 or "error" in body:
-                    error = body.get("error", {})
+                    error = body.get("error", {}) if isinstance(body, dict) else {}
                     code = error.get("code")
+                    if allow_item_errors and code not in RETRYABLE_ERROR_CODES:
+                        results.append({"error": error or {"message": "Unknown Facebook API batch item error"}})
+                        continue
                     message = error.get("message", "Unknown Facebook API batch item error")
                     batch_error = FacebookApiError(f"Facebook API error ({code}): {message}", code=code)
                     break

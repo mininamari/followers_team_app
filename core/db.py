@@ -285,6 +285,47 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ig_accounts (
+                ig_user_id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                page_id TEXT,
+                page_name TEXT,
+                followers_count INTEGER,
+                media_count INTEGER,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ig_media (
+                media_id TEXT PRIMARY KEY,
+                ig_user_id TEXT NOT NULL,
+                account TEXT NOT NULL,
+                published_at TEXT,
+                month TEXT,
+                media_type TEXT,
+                media_product_type TEXT,
+                permalink TEXT,
+                caption TEXT,
+                preview_url TEXT,
+                like_count INTEGER,
+                comments_count INTEGER,
+                reach INTEGER,
+                views INTEGER,
+                saved INTEGER,
+                shares INTEGER,
+                total_interactions INTEGER,
+                follows INTEGER,
+                profile_visits INTEGER,
+                insights_error TEXT,
+                synced_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
         ensure_schema_columns(conn)
         merge_known_account_aliases(conn)

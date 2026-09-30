@@ -13,6 +13,7 @@ Streamlit application for calculating Instagram followers from Meta Business Sui
 - Upload history for auditing.
 - Automatic and manual SQLite database backups.
 - Optional Facebook Marketing API sync (campaigns, ads, creatives, spend), matched against manual follower uploads.
+- Optional Instagram Graph API sync of every post (reach, views, likes, comments, saves, shares, follows), joined with followers calculated from uploads on the `Organic posts` page.
 
 ## Environment Variables
 
@@ -97,6 +98,28 @@ Manager (no public App Review required, since this only reads your own ad accoun
 7. In the app, open `Facebook Ads` → **Рекламные аккаунты Facebook** and map each `act_XXXXXXXXX` ad account ID to its Novakid region, then click **Sync now**.
 
 Google Slides export of selected campaigns/creatives is a planned follow-up, not yet implemented.
+
+## Instagram posts (Organic posts page)
+
+The `Organic posts` page loads statistics for every Instagram post through the
+Instagram Graph API and shows them next to the total / paid / organic followers
+calculated from the Meta and PR uploads. API posts are matched to uploaded rows
+by publication ID (the Meta export `ID публикации` is the Instagram media ID),
+falling back to the permalink. Uploaded posts that were not synced and synced
+posts without an upload both stay in the table, marked by the `Source` column.
+
+It uses the same `META_ACCESS_TOKEN`. Add these permissions to the system user
+token and assign the Novakid Facebook Pages to the system user:
+
+- `instagram_basic`
+- `instagram_manage_insights`
+- `pages_show_list`
+- `pages_read_engagement`
+
+Then open `Organic posts` → **Instagram API sync**, click **Find Instagram
+accounts**, choose a publication period (up to 365 days) and click **Load posts
+statistics**. Metrics Meta does not provide for a format (for example `follows`
+for Reels) stay empty; per-post API errors are shown in the `API note` column.
 
 ## Railway Deployment
 
