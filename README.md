@@ -1,18 +1,19 @@
 # MARK/01 — Social Growth System
 
-Streamlit application for calculating Instagram followers from Meta Business Suite and Novakid PR CSV exports.
+Streamlit application for calculating Instagram followers from Meta Business Suite exports and Facebook Ads API data.
 
 ## Features
 
 - Team login with role-based access control.
 - Meta Business Suite CSV upload.
-- Novakid PR CSV/Excel upload with page mapping, import preview, and add-only mode.
-- Paid-only PR rows without a Meta publication match increase paid and total without reducing organic.
+- Paid followers and spend for the same period are loaded from the Facebook Ads API automatically on every Meta upload.
+- Paid-only ads without a Meta publication match increase paid and total without reducing organic.
 - Final follower report with CSV and Excel export.
-- Manual PR follower overrides for authorized users.
+- Manual paid follower overrides for authorized users.
 - Upload history for auditing.
 - Automatic and manual SQLite database backups.
-- Optional Facebook Marketing API sync (campaigns, ads, creatives, spend), matched against manual follower uploads.
+- Facebook Marketing API sync (campaigns, ads, creatives, spend, Instagram follows).
+- Optional Instagram Graph API sync of every post (reach, views, likes, comments, saves, shares, follows), joined with followers calculated from uploads on the `Organic posts` page.
 
 ## Environment Variables
 
@@ -54,16 +55,18 @@ On first startup, the app creates the first admin only from the environment vari
 | Role | Permissions |
 | --- | --- |
 | Admin | Access all features, create/edit/delete users, assign roles, manage backups. |
-| Manager | Access business functionality: upload files, edit manual PR values, view/export reports and upload history. |
+| Manager | Access business functionality: upload files, edit manual paid values, view/export reports and upload history. |
 | Viewer | Read-only access to dashboard, reports, exports, and upload history. |
 
 Existing databases are migrated automatically. Previous `admin` users remain admins, and previous non-admin users become managers.
 
 ## Follower calculation
 
-PR `Название объявления` is matched to Meta `ID публикации` for the same account and reporting period. Matched rows split the Meta total into paid and organic. PR rows without a Meta match are kept as paid-only rows: they add the same value to paid and total, while existing organic stays unchanged. Every calculated row and monthly total therefore follows `total = paid + organic`.
+Every Meta upload syncs all active Facebook ad accounts for exactly the same period and sums each ad's Instagram follows (`instagram_profile_follow`) and spend. By team convention the ad name is the Meta `ID публикации`, so it is matched first; the post promoted by the creative (`effective_instagram_media_id`) is the fallback. Matched rows split the Meta total into paid and organic. Ads without a Meta match are kept as paid-only rows under their ad name: they add the same value to paid and total, while existing organic stays unchanged. Every calculated row and monthly total therefore follows `total = paid + organic`.
 
-The PR upload page shows a preview before saving. In add-only mode, existing imported rows and manual corrections are left unchanged; only new account + publication ID pairs are inserted.
+The Instagram account of an ad comes from the matched Meta publication, then from the synced Instagram post, the ad creative's Instagram account, or the `[r:xx]` campaign naming convention. Ads whose account cannot be determined are skipped and listed in the upload warnings. Only accounts present in the Meta upload are updated. Their paid rows for that period are replaced by API data, while manual corrections stay in effect. If any ad account fails to sync, paid rows are left unchanged.
+
+`Upload Meta` → **Reload paid for an uploaded period** re-runs this for a period that was already uploaded, for example after late attributed follows.
 
 ## Backups
 
@@ -80,10 +83,8 @@ Only the newest 8 backups are kept by default. Older backup files are deleted au
 ## Facebook Ads integration
 
 The `Facebook Ads` page pulls campaigns, ads, creatives, and spend from the Facebook
-Marketing API, and shows a best-effort follower/CPF match against the same manual
-Novakid PR uploads used elsewhere in the app. It does not replace the manual PR
-upload — Instagram follower counts are not available through the Marketing API,
-so that upload stays the source of truth for followers.
+Marketing API. The same sync provides paid followers for every Meta upload (see
+"Follower calculation"), which replaced the former manual Novakid PR upload.
 
 To enable it, you need a **System User access token** from your own Meta Business
 Manager (no public App Review required, since this only reads your own ad accounts):
@@ -97,6 +98,28 @@ Manager (no public App Review required, since this only reads your own ad accoun
 7. In the app, open `Facebook Ads` → **Рекламные аккаунты Facebook** and map each `act_XXXXXXXXX` ad account ID to its Novakid region, then click **Sync now**.
 
 Google Slides export of selected campaigns/creatives is a planned follow-up, not yet implemented.
+
+## Instagram posts (Organic posts page)
+
+The `Organic posts` page loads statistics for every Instagram post through the
+Instagram Graph API and shows them next to the total / paid / organic followers
+calculated from the Meta uploads and ad data. API posts are matched to uploaded rows
+by publication ID (the Meta export `ID публикации` is the Instagram media ID),
+falling back to the permalink. Uploaded posts that were not synced and synced
+posts without an upload both stay in the table, marked by the `Source` column.
+
+It uses the same `META_ACCESS_TOKEN`. Add these permissions to the system user
+token and assign the Novakid Facebook Pages to the system user:
+
+- `instagram_basic`
+- `instagram_manage_insights`
+- `pages_show_list`
+- `pages_read_engagement`
+
+Then open `Organic posts` → **Instagram API sync**, click **Find Instagram
+accounts**, choose a publication period (up to 365 days) and click **Load posts
+statistics**. Metrics Meta does not provide for a format (for example `follows`
+for Reels) stay empty; per-post API errors are shown in the `API note` column.
 
 ## Railway Deployment
 

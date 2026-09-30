@@ -9,7 +9,6 @@ import pandas as pd
 
 from core.auth import require_permission
 from core.config import (
-    ACCOUNT_ALIASES,
     UPLOAD_DIR,
     META_ID_COL,
     META_FOLLOWERS_COL,
@@ -19,15 +18,7 @@ from core.config import (
     META_ACCOUNT_NAME_COL,
     META_PUBLISHED_AT_COL,
     META_COLUMN_ALIASES,
-    PR_START_COL,
-    PR_END_COL,
-    PR_AD_NAME_COL,
-    PR_PAGE_COL,
-    PR_FOLLOWERS_COL,
-    PR_SPEND_COL,
-    PR_COLUMN_ALIASES,
     REQUIRED_META,
-    REQUIRED_PR,
     now_utc,
 )
 from core.i18n import tr
@@ -55,15 +46,6 @@ def to_number(series: pd.Series) -> pd.Series:
         series.astype(str).str.replace(" ", "", regex=False).str.replace(",", ".", regex=False),
         errors="coerce",
     ).fillna(0)
-
-
-def normalize_period(value) -> str:
-    dt = pd.to_datetime(value, errors="coerce", dayfirst=False)
-    if pd.isna(dt):
-        dt = pd.to_datetime(value, errors="coerce", dayfirst=True)
-    if pd.isna(dt):
-        raise ValueError(tr(f"Could not parse period date: {value}", f"Не удалось распознать дату периода: {value}"))
-    return dt.date().isoformat()
 
 
 def normalize_publication_date(value) -> str:
@@ -101,24 +83,6 @@ def normalize_meta_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return normalized, used_aliases
 
 
-def normalize_pr_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    rename_map = {}
-    used_aliases = []
-    normalized_columns = {str(column).strip().casefold(): column for column in df.columns}
-    for canonical, aliases in PR_COLUMN_ALIASES.items():
-        if canonical in df.columns:
-            continue
-        for alias in aliases:
-            source_column = normalized_columns.get(alias.casefold())
-            if source_column:
-                rename_map[source_column] = canonical
-                used_aliases.append(f"{source_column} -> {canonical}")
-                break
-
-    normalized = df.rename(columns=rename_map).copy()
-    return normalized, used_aliases
-
-
 def parse_meta_period_from_filename(filename: str) -> Optional[tuple[str, str]]:
     month_map = {
         "jan": "01", "feb": "02", "mar": "03", "apr": "04", "may": "05", "jun": "06",
@@ -128,38 +92,6 @@ def parse_meta_period_from_filename(filename: str) -> Optional[tuple[str, str]]:
         r"(?P<m1>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(?P<d1>\d{1,2})-(?P<y1>\d{4})"
         r"[_\s-]+"
         r"(?P<m2>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(?P<d2>\d{1,2})-(?P<y2>\d{4})",
-        re.IGNORECASE,
-    )
-    m = pattern.search(filename)
-    if not m:
-        return None
-    start = f"{m.group('y1')}-{month_map[m.group('m1').lower()]}-{int(m.group('d1')):02d}"
-    end = f"{m.group('y2')}-{month_map[m.group('m2').lower()]}-{int(m.group('d2')):02d}"
-    return start, end
-
-
-def parse_pr_period_from_filename(filename: str) -> Optional[tuple[str, str]]:
-    month_map = {
-        "янв": "01",
-        "фев": "02",
-        "мар": "03",
-        "апр": "04",
-        "май": "05",
-        "мая": "05",
-        "июн": "06",
-        "июл": "07",
-        "авг": "08",
-        "сен": "09",
-        "сент": "09",
-        "окт": "10",
-        "ноя": "11",
-        "дек": "12",
-    }
-    month_pattern = "|".join(sorted(month_map, key=len, reverse=True))
-    pattern = re.compile(
-        rf"(?P<d1>\d{{1,2}})[\s_.-]*(?P<m1>{month_pattern})[\s_.-]*(?P<y1>\d{{4}})"
-        rf".*?"
-        rf"(?P<d2>\d{{1,2}})[\s_.-]*(?P<m2>{month_pattern})[\s_.-]*(?P<y2>\d{{4}})",
         re.IGNORECASE,
     )
     m = pattern.search(filename)
@@ -202,36 +134,6 @@ def read_table_any(uploaded_file) -> pd.DataFrame:
 def read_csv_any(uploaded_file) -> pd.DataFrame:
     """Backward-compatible name; reads both CSV and Excel uploads."""
     return read_table_any(uploaded_file)
-
-
-PR_PAGE_ACCOUNT_SUGGESTIONS = {
-    "novakid türkiye": "novakidturkiye",
-    "novakid school": "novakidschool",
-    "novakid italia": "novakiditalia",
-    "novakid españa": "novakidespana",
-    "novakid deutschland": "novakid_de",
-    "novakid mena": "novakid_mena",
-    "novakid polska": "novakidpolska",
-    "novakid korea": "novakid_korea",
-    "novakid romania": "novakid_romania",
-    "novakid france": "novakid_france",
-    "novakid israel": "novakid_israel",
-    "novakid japan": "novakid_jp",
-    "novakid czech": "novakid_czech",
-}
-
-
-def pr_page_summary(uploaded_file) -> pd.DataFrame:
-    df, _ = normalize_pr_columns(read_table_any(uploaded_file))
-    if PR_PAGE_COL not in df.columns or PR_FOLLOWERS_COL not in df.columns:
-        return pd.DataFrame(columns=[PR_PAGE_COL, PR_FOLLOWERS_COL, "account"])
-    data = df.copy()
-    data[PR_PAGE_COL] = data[PR_PAGE_COL].fillna("").astype(str).str.strip()
-    data = data[(data[PR_PAGE_COL] != "") & (data[PR_PAGE_COL] != "12")].copy()
-    data[PR_FOLLOWERS_COL] = to_number(data[PR_FOLLOWERS_COL]).astype(int)
-    summary = data.groupby(PR_PAGE_COL, as_index=False)[PR_FOLLOWERS_COL].sum()
-    summary["account"] = summary[PR_PAGE_COL].str.casefold().map(PR_PAGE_ACCOUNT_SUGGESTIONS).fillna("")
-    return summary.sort_values(PR_FOLLOWERS_COL, ascending=False)
 
 
 def save_uploaded_file(uploaded_file, file_type: str, data: Optional[bytes] = None) -> str:
@@ -327,7 +229,7 @@ def recalc_final(account: str, period_start: str, period_end: str) -> None:
 
 
 def recalc_monthly_totals(account: str, period_start: str, period_end: str) -> None:
-    """Persist total = paid + organic, treating unmatched PR rows as paid-only."""
+    """Persist total = paid + organic, treating unmatched paid rows as paid-only."""
     with connect_db() as conn:
         imported = period_follower_totals(conn, account, period_start, period_end)
         imported_total = imported["total"]
@@ -438,138 +340,13 @@ def save_follower_overrides(rows: pd.DataFrame, user: dict) -> int:
 
 # -------------------- Import logic --------------------
 
-def _pr_import_preview(
-    rows: list[tuple],
-    rows_to_save: list[tuple],
-    period_start: str,
-    period_end: str,
-    add_only: bool,
-) -> pd.DataFrame:
-    rows_by_account: dict[str, list[tuple]] = {}
-    saved_by_account: dict[str, list[tuple]] = {}
-    for row in rows:
-        rows_by_account.setdefault(str(row[0]), []).append(row)
-    for row in rows_to_save:
-        saved_by_account.setdefault(str(row[0]), []).append(row)
-
-    preview_rows = []
-    overall = {"total": 0, "paid": 0, "organic": 0}
-    with connect_db() as conn:
-        for affected_account in sorted(rows_by_account):
-            current_rows = period_follower_rows(conn, affected_account, period_start, period_end)
-            current_by_id = {row["publication_id"]: row for row in current_rows}
-            current_total = sum(row["total"] for row in current_rows)
-            current_paid = sum(row["paid"] for row in current_rows)
-            current_organic = sum(row["organic"] for row in current_rows)
-            account_rows = rows_by_account[affected_account]
-            saved_rows = saved_by_account.get(affected_account, [])
-            matched_rows = 0
-            paid_only_rows = 0
-            paid_only_followers = 0
-            projected_total = current_total
-            projected_paid = current_paid
-            projected_organic = current_organic
-
-            for saved in saved_rows:
-                publication_id = str(saved[4])
-                imported_paid = int(saved[5])
-                current = current_by_id.get(publication_id)
-                is_matched = bool(current and current["meta"])
-                matched_rows += int(is_matched)
-                paid_only_rows += int(not is_matched)
-                if not is_matched:
-                    paid_only_followers += imported_paid
-
-                if add_only:
-                    old_total = current["total"] if current else 0
-                    old_paid = current["paid"] if current else 0
-                    old_organic = current["organic"] if current else 0
-                    manual_paid = current["manual_paid"] if current else None
-                    new_paid = manual_paid if manual_paid is not None else imported_paid
-                    raw_total = current["raw_total"] if is_matched else 0
-                    new_organic = max(0, raw_total - new_paid) if is_matched else 0
-                    new_total = new_paid + new_organic
-                    projected_total += new_total - old_total
-                    projected_paid += new_paid - old_paid
-                    projected_organic += new_organic - old_organic
-
-            if add_only:
-                monthly_override = conn.execute(
-                    """
-                    SELECT manual_total_followers, manual_paid_followers
-                    FROM monthly_follower_totals
-                    WHERE account=? AND period_start=? AND period_end=?
-                    """,
-                    (affected_account, period_start, period_end),
-                ).fetchone()
-                manual_total = monthly_override["manual_total_followers"] if monthly_override else None
-                manual_paid = monthly_override["manual_paid_followers"] if monthly_override else None
-                projected_paid = int(manual_paid) if manual_paid is not None else projected_paid
-                selected_total = int(manual_total) if manual_total is not None else projected_total
-                projected_total = max(selected_total, projected_paid)
-                projected_organic = projected_total - projected_paid
-                overall["total"] += projected_total
-                overall["paid"] += projected_paid
-                overall["organic"] += projected_organic
-
-            preview_rows.append(
-                {
-                    "account": affected_account,
-                    "file_rows": len(account_rows),
-                    "existing_unchanged": len(account_rows) - len(saved_rows),
-                    "rows_to_save": len(saved_rows),
-                    "matched_meta": matched_rows,
-                    "paid_only": paid_only_rows,
-                    "paid_to_save": sum(int(row[5]) for row in saved_rows),
-                    "paid_only_followers": paid_only_followers,
-                    "projected_total": projected_total if add_only else None,
-                    "projected_paid": projected_paid if add_only else None,
-                    "projected_organic": projected_organic if add_only else None,
-                }
-            )
-
-        if add_only:
-            all_accounts = {
-                str(row[0])
-                for row in conn.execute(
-                    """
-                    SELECT account FROM meta_publications WHERE period_start=? AND period_end=?
-                    UNION
-                    SELECT account FROM pr_ads WHERE period_start=? AND period_end=?
-                    UNION
-                    SELECT account FROM follower_overrides WHERE period_start=? AND period_end=?
-                    UNION
-                    SELECT account FROM monthly_follower_totals WHERE period_start=? AND period_end=?
-                    """,
-                    (
-                        period_start, period_end, period_start, period_end,
-                        period_start, period_end, period_start, period_end,
-                    ),
-                ).fetchall()
-            }
-            for unaffected_account in sorted(all_accounts - set(rows_by_account)):
-                monthly = conn.execute(
-                    """
-                    SELECT total_followers, paid_followers, organic_followers
-                    FROM monthly_follower_totals
-                    WHERE account=? AND period_start=? AND period_end=?
-                    """,
-                    (unaffected_account, period_start, period_end),
-                ).fetchone()
-                if monthly:
-                    overall["total"] += int(monthly["total_followers"])
-                    overall["paid"] += int(monthly["paid_followers"])
-                    overall["organic"] += int(monthly["organic_followers"])
-                else:
-                    current = period_follower_totals(conn, unaffected_account, period_start, period_end)
-                    overall["total"] += current["total"]
-                    overall["paid"] += current["paid"]
-                    overall["organic"] += current["organic"]
-    preview = pd.DataFrame(preview_rows)
-    preview.attrs["overall"] = overall if add_only else None
-    return preview
-
-def import_meta(uploaded_file, user: dict, manual_start: Optional[date], manual_end: Optional[date]) -> tuple[int, list[str]]:
+def import_meta(
+    uploaded_file,
+    user: dict,
+    manual_start: Optional[date],
+    manual_end: Optional[date],
+    paid_from_ads_api: bool = False,
+) -> tuple[int, list[str]]:
     require_permission(user, "upload_meta")
     df = read_csv_any(uploaded_file)
     df, used_aliases = normalize_meta_columns(df)
@@ -667,215 +444,13 @@ def import_meta(uploaded_file, user: dict, manual_start: Optional[date], manual_
         )
         conn.commit()
 
-    for account in sorted(grouped[META_ACCOUNT_USERNAME_COL].unique()):
-        recalc_final(str(account), period_start, period_end)
+    accounts = {str(account) for account in grouped[META_ACCOUNT_USERNAME_COL].unique()}
+    if paid_from_ads_api:
+        # Imported lazily: the ads integration builds on this module's helpers.
+        from integrations.ads_paid_followers import save_paid_from_ads_api
+
+        _, paid_warnings = save_paid_from_ads_api(period_start, period_end, accounts, user["username"])
+        warnings.extend(paid_warnings)
+    for account in sorted(accounts):
+        recalc_final(account, period_start, period_end)
     return len(rows), warnings
-
-
-def import_pr(
-    uploaded_file,
-    user: dict,
-    account: str,
-    auto_detect_accounts: bool = False,
-    page_account_map: Optional[dict[str, str]] = None,
-    add_only: bool = False,
-    preview_only: bool = False,
-) -> tuple[int | pd.DataFrame, list[str]]:
-    require_permission(user, "upload_pr")
-    page_account_map = {
-        str(k).strip(): ACCOUNT_ALIASES.get(str(v).strip(), str(v).strip())
-        for k, v in (page_account_map or {}).items()
-        if str(v).strip()
-    }
-    if not auto_detect_accounts and not page_account_map and not account.strip():
-        raise ValueError(tr("Choose an account for the PR file, for example novakid_israel.", "Для PR-файла нужно выбрать аккаунт, например novakid_israel."))
-    account = account.strip()
-    if not auto_detect_accounts and not page_account_map and not is_novakid_account(account):
-        raise ValueError(tr("Data can only be saved for Novakid accounts.", "Можно сохранять данные только для аккаунтов Novakid."))
-    df = read_csv_any(uploaded_file)
-    df, used_aliases = normalize_pr_columns(df)
-    validate_columns(df, REQUIRED_PR, "Novakid PR")
-    warnings: list[str] = []
-    if used_aliases:
-        warnings.append(tr("PR columns were recognized by alternative names: ", "PR-колонки распознаны по альтернативным названиям: ") + ", ".join(used_aliases) + ".")
-    df = df.copy()
-    if page_account_map and PR_PAGE_COL in df.columns:
-        df[PR_PAGE_COL] = df[PR_PAGE_COL].fillna("").astype(str).str.strip()
-        summary_rows = df[PR_PAGE_COL].isin(["", "12"])
-        if summary_rows.any():
-            df = df[~summary_rows].copy()
-            warnings.append(tr(
-                f"Excel summary/blank page rows skipped: {int(summary_rows.sum())}.",
-                f"Пропущены итоговые/пустые строки Excel: {int(summary_rows.sum())}.",
-            ))
-        unknown_pages = sorted(set(df.loc[~df[PR_PAGE_COL].isin(page_account_map), PR_PAGE_COL]) - {""})
-        if unknown_pages:
-            raise ValueError(tr(
-                "Choose an Instagram account for every page: " + ", ".join(unknown_pages),
-                "Выберите Instagram-аккаунт для каждой страницы: " + ", ".join(unknown_pages),
-            ))
-        df["__account"] = df[PR_PAGE_COL].map(page_account_map)
-    df[PR_START_COL] = df[PR_START_COL].apply(normalize_period)
-    df[PR_END_COL] = df[PR_END_COL].apply(normalize_period)
-    starts = sorted(df[PR_START_COL].dropna().unique())
-    ends = sorted(df[PR_END_COL].dropna().unique())
-    file_period = parse_pr_period_from_filename(uploaded_file.name)
-    if file_period:
-        period_start, period_end = file_period
-        column_periods = {(start, end) for start in starts for end in ends}
-        if column_periods != {file_period}:
-            warnings.append(
-                tr(
-                    f"PR period was taken from the filename ({period_start} - {period_end}); CSV columns contain {', '.join(f'{start} - {end}' for start, end in sorted(column_periods))}.",
-                    f"Период PR взят из имени файла ({period_start} - {period_end}); в колонках CSV указано {', '.join(f'{start} - {end}' for start, end in sorted(column_periods))}.",
-                )
-            )
-    elif len(starts) != 1 or len(ends) != 1:
-        raise ValueError(tr("Multiple periods were found in Novakid PR. Upload a file for one period only.", "В Novakid PR найдено несколько периодов. Загрузите файл только за один период."))
-    else:
-        period_start, period_end = starts[0], ends[0]
-    if period_start > period_end:
-        raise ValueError(tr("PR period start date is after the end date.", "Дата начала периода PR больше даты окончания."))
-    month = month_from_period(period_start)
-
-    df[PR_AD_NAME_COL] = df[PR_AD_NAME_COL].apply(clean_id)
-    df[PR_FOLLOWERS_COL] = to_number(df[PR_FOLLOWERS_COL]).astype(int)
-    df[PR_SPEND_COL] = to_number(df[PR_SPEND_COL]).astype(float)
-    df = df[df[PR_AD_NAME_COL] != ""].copy()
-    group_columns = (["__account", PR_AD_NAME_COL] if page_account_map and PR_PAGE_COL in df.columns else [PR_AD_NAME_COL])
-    grouped = (
-        df.groupby(group_columns, as_index=False)
-        .agg({PR_FOLLOWERS_COL: "sum", PR_SPEND_COL: "sum"})
-        .rename(columns={PR_AD_NAME_COL: "publication_id"})
-    )
-    if grouped.empty:
-        raise ValueError(tr("Novakid PR has no rows with a filled ad name.", "В Novakid PR нет строк с заполненным названием объявления."))
-
-    if page_account_map and "__account" in grouped.columns:
-        grouped = grouped.rename(columns={"__account": "account"})
-    elif auto_detect_accounts:
-        ids = grouped["publication_id"].dropna().astype(str).tolist()
-        placeholders = ",".join(["?"] * len(ids))
-        with connect_db() as conn:
-            cursor = conn.execute(
-                f"""
-                SELECT publication_id, account
-                FROM meta_publications
-                WHERE period_start=? AND period_end=? AND publication_id IN ({placeholders})
-                GROUP BY publication_id, account
-                """,
-                (period_start, period_end, *ids),
-            )
-            meta_matches = pd.DataFrame(
-                [(row[0], row[1]) for row in cursor.fetchall()],
-                columns=["publication_id", "account"],
-            )
-
-        if meta_matches.empty:
-            raise ValueError(tr("No PR-to-Meta matches were found by publication ID for this period.", "Не найдено совпадений PR с Meta по ID публикации за этот период."))
-
-        account_counts = meta_matches.groupby("publication_id")["account"].nunique()
-        ambiguous_ids = set(account_counts[account_counts > 1].index.astype(str))
-        matched_once = meta_matches[~meta_matches["publication_id"].isin(ambiguous_ids)].copy()
-        grouped = grouped.merge(matched_once, on="publication_id", how="left")
-
-        unmatched_ids = grouped.loc[grouped["account"].isna(), "publication_id"].astype(str).tolist()
-        excluded_ids = sorted(set(unmatched_ids) | ambiguous_ids)
-        if excluded_ids:
-            preview = ", ".join(excluded_ids[:25])
-            extra = "" if len(excluded_ids) <= 25 else tr(f" and {len(excluded_ids) - 25} more", f" и еще {len(excluded_ids) - 25}")
-            warnings.append(
-                tr("Excluded PR rows without an unambiguous Meta match by publication ID: ", "Исключены строки PR без однозначного совпадения с Meta по ID публикации: ")
-                + f"{preview}{extra}."
-            )
-
-        grouped = grouped[grouped["account"].notna()].copy()
-        if grouped.empty:
-            raise ValueError(tr("After excluding unmatched IDs, there are no PR rows left to save.", "После исключения несовпавших ID не осталось строк PR для сохранения."))
-    else:
-        grouped["account"] = account
-
-    uploaded_at = now_utc()
-    rows = []
-    for _, r in grouped.iterrows():
-        rows.append((
-            r["account"], period_start, period_end, month, r["publication_id"], int(r[PR_FOLLOWERS_COL]),
-            float(r[PR_SPEND_COL]), uploaded_file.name, user["username"], uploaded_at,
-        ))
-
-    rows_to_save = rows
-    if add_only:
-        with connect_db() as conn:
-            existing_keys = {
-                (str(row[0]), str(row[1]))
-                for row in conn.execute(
-                    "SELECT account, publication_id FROM pr_ads WHERE period_start=? AND period_end=?",
-                    (period_start, period_end),
-                ).fetchall()
-            }
-        rows_to_save = [row for row in rows if (str(row[0]), str(row[4])) not in existing_keys]
-        skipped = len(rows) - len(rows_to_save)
-        if skipped:
-            warnings.append(tr(
-                f"Existing rows left unchanged: {skipped}.",
-                f"Существующие строки оставлены без изменений: {skipped}.",
-            ))
-
-    preview = _pr_import_preview(rows, rows_to_save, period_start, period_end, add_only)
-    paid_only_rows = int(preview["paid_only"].sum()) if not preview.empty else 0
-    paid_only_followers = int(preview["paid_only_followers"].sum()) if not preview.empty else 0
-    if paid_only_rows:
-        warnings.append(tr(
-            f"Paid-only rows without a matching Meta publication: {paid_only_rows} ({paid_only_followers:,} followers). They increase paid and total; organic stays unchanged.",
-            f"Paid-only строки без пары в Meta: {paid_only_rows} ({paid_only_followers:,} подписчиков). Они увеличивают paid и total; organic не меняется.",
-        ))
-    if preview_only:
-        return preview, warnings
-
-    stored_path = save_uploaded_file(uploaded_file, "pr")
-
-    with connect_db() as conn:
-        if not add_only:
-            for affected_account in sorted({str(row[0]) for row in rows_to_save}):
-                conn.execute(
-                    "DELETE FROM pr_ads WHERE account=? AND period_start=? AND period_end=?",
-                    (affected_account, period_start, period_end),
-                )
-        conn.executemany(
-            """
-            INSERT INTO pr_ads(
-                account, period_start, period_end, month, publication_id, pr_followers, spend_usd,
-                pr_filename, uploaded_by, uploaded_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(account, period_start, period_end, publication_id)
-            DO UPDATE SET
-                month=excluded.month,
-                pr_followers=excluded.pr_followers,
-                spend_usd=excluded.spend_usd,
-                pr_filename=excluded.pr_filename,
-                uploaded_by=excluded.uploaded_by,
-                uploaded_at=excluded.uploaded_at
-            """,
-            rows_to_save,
-        )
-        conn.execute(
-            "INSERT INTO uploads(file_type,account,period_start,period_end,filename,stored_path,uploaded_by,uploaded_at,rows_saved,warnings) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (
-                "pr",
-                "auto" if auto_detect_accounts else account,
-                period_start,
-                period_end,
-                uploaded_file.name,
-                stored_path,
-                user["username"],
-                uploaded_at,
-                len(rows_to_save),
-                "\n".join(warnings),
-            ),
-        )
-        conn.commit()
-
-    affected_accounts = sorted({str(row[0]) for row in rows_to_save})
-    for affected_account in affected_accounts:
-        recalc_final(affected_account, period_start, period_end)
-    return len(rows_to_save), warnings

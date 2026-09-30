@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import date, timedelta
 
 import pandas as pd
@@ -12,6 +11,8 @@ from core.database import connect_db
 from core.db import db_df
 from core.i18n import tr
 from core.style import hero
+from integrations.ad_naming import profile_from_ad_names as _profile_from_ad_names
+from integrations.ad_naming import region_profile_from_ad_names as _region_profile_from_ad_names
 from integrations.facebook_ads_client import is_configured
 from integrations.facebook_ads_sync import MAX_SYNC_DAYS, last_sync_for_account, sync_ad_account
 
@@ -19,26 +20,6 @@ FATIGUE_MIN_DAYS = 6
 FATIGUE_DECLINE_RATIO = 0.7
 MIN_ROWS_FOR_PERFORMANCE_FLAG = 4
 
-REGION_PROFILE_FALLBACKS = {
-    "arab": "novakid_mena",
-    "cz": "novakid_czech",
-    "de": "novakid_de",
-    "es": "novakidespana",
-    "fr": "novakid_france",
-    "global": "novakid_global",
-    "he": "novakid_israel",
-    "il": "novakid_israel",
-    "it": "novakiditalia",
-    "jp": "novakid_jp",
-    "kr": "novakid_korea",
-    "pl": "novakidpolska",
-    "ro": "novakid_romania",
-    "school": "novakidschool",
-    "tr": "novakidturkiye",
-    "ww": "novakid_global",
-}
-REGION_PROFILE_RE = re.compile(r"\br:([a-z0-9_-]+)\s*-\s*@?(novakid[a-z0-9_.]*)\b", re.IGNORECASE)
-REGION_CODE_RE = re.compile(r"\[r:([a-z0-9_-]+)\]", re.IGNORECASE)
 PROFILE_REGION_DEFAULTS = {
     "novakid_mena": "arab",
     "novakid_czech": "cz",
@@ -65,26 +46,6 @@ def _sync_validation_error(configured: bool, period_error: str) -> str:
             "META_ACCESS_TOKEN не настроен в Railway.",
         )
     return period_error
-
-
-def _region_profile_from_ad_names(*names: object) -> tuple[str, str | None] | None:
-    for value in names:
-        text = str(value or "").strip()
-        explicit = REGION_PROFILE_RE.search(text)
-        if explicit:
-            return explicit.group(1).lower(), explicit.group(2).lower()
-    for value in names:
-        region = REGION_CODE_RE.search(str(value or ""))
-        if region:
-            region_code = region.group(1).lower()
-            return region_code, REGION_PROFILE_FALLBACKS.get(region_code)
-    return None
-
-
-def _profile_from_ad_names(*names: object) -> str | None:
-    """Resolve a Novakid Instagram username from the ad naming convention."""
-    match = _region_profile_from_ad_names(*names)
-    return match[1] if match else None
 
 
 def _instagram_profile_options(account_ids: list[str]) -> dict[str, str]:

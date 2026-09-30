@@ -20,6 +20,7 @@ from core.config import (
     META_ID_COL,
     META_REACH_COL,
     ROLE_ADMIN,
+    ROLE_MANAGER,
     ROLES,
     UPLOAD_DIR,
     now_utc,
@@ -231,6 +232,7 @@ def init_db() -> None:
                 thumbnail_url TEXT,
                 video_id TEXT,
                 instagram_user_id TEXT,
+                effective_instagram_media_id TEXT,
                 tags TEXT,
                 updated_at TEXT NOT NULL
             )
@@ -282,6 +284,47 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS fb_sync_locks (
                 account_id TEXT PRIMARY KEY,
                 acquired_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ig_accounts (
+                ig_user_id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                page_id TEXT,
+                page_name TEXT,
+                followers_count INTEGER,
+                media_count INTEGER,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ig_media (
+                media_id TEXT PRIMARY KEY,
+                ig_user_id TEXT NOT NULL,
+                account TEXT NOT NULL,
+                published_at TEXT,
+                month TEXT,
+                media_type TEXT,
+                media_product_type TEXT,
+                permalink TEXT,
+                caption TEXT,
+                preview_url TEXT,
+                like_count INTEGER,
+                comments_count INTEGER,
+                reach INTEGER,
+                views INTEGER,
+                saved INTEGER,
+                shares INTEGER,
+                total_interactions INTEGER,
+                follows INTEGER,
+                profile_visits INTEGER,
+                insights_error TEXT,
+                synced_at TEXT NOT NULL
             )
             """
         )
@@ -493,6 +536,8 @@ def ensure_schema_columns(conn) -> None:
         conn.execute("ALTER TABLE fb_creatives ADD COLUMN tags TEXT")
     if "instagram_user_id" not in creative_cols:
         conn.execute("ALTER TABLE fb_creatives ADD COLUMN instagram_user_id TEXT")
+    if "effective_instagram_media_id" not in creative_cols:
+        conn.execute("ALTER TABLE fb_creatives ADD COLUMN effective_instagram_media_id TEXT")
 
     insight_cols = _table_columns(conn, "fb_insights")
     if "instagram_followers" not in insight_cols:

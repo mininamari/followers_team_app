@@ -14,10 +14,10 @@ from screens.backups import page_backups
 from screens.dashboard import page_dashboard
 from screens.facebook_ads import page_facebook_ads
 from screens.history import page_upload_history
+from screens.organic_posts import page_organic_posts
 from screens.profile import page_profile
 from screens.reports import page_report
 from screens.upload_meta import page_upload_meta
-from screens.upload_pr import page_upload_pr
 from screens.users import page_users
 
 
@@ -131,10 +131,9 @@ def sidebar(user: dict) -> str:
         pages = []
         if has_permission(user, "view_dashboard"):
             pages.append(("Dashboard", "Dashboard"))
+            pages.append(("Organic posts", tr("Organic posts", "Органика: посты")))
         if has_permission(user, "upload_meta"):
             pages.append(("Upload Meta", tr("Upload Meta", "Загрузка Meta")))
-        if has_permission(user, "upload_pr"):
-            pages.append(("Upload PR", tr("Upload PR", "Загрузка PR")))
         if has_permission(user, "view_reports"):
             pages.append(("Reports", tr("Reports", "Отчеты")))
         if has_permission(user, "view_fb_ads"):
@@ -170,10 +169,10 @@ def main() -> None:
     page = sidebar(user)
     if page == "Dashboard":
         page_dashboard()
+    elif page == "Organic posts":
+        page_organic_posts(user)
     elif page == "Upload Meta":
         page_upload_meta(user)
-    elif page == "Upload PR":
-        page_upload_pr(user)
     elif page == "Reports":
         page_report(user)
     elif page == "Facebook Ads":
