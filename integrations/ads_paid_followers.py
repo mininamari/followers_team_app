@@ -95,44 +95,32 @@ def _period_ads(conn, account_ids: list[str], period_start: str, period_end: str
     return [dict(zip(columns, tuple(row))) for row in cursor.fetchall()]
 
 
-def save_paid_from_ads_api(
-    period_start: str, period_end: str, accounts: set[str], username: str
-) -> tuple[bool, list[str]]:
-    """Sync ad accounts for the period and replace its paid rows with API data.
-
-    Nothing is written unless every active ad account synced successfully, so a
-    failed request never wipes paid followers that were already saved.
-    """
-    if not accounts:
-        return False, []
-    if not is_configured():
-        return False, [tr(
-            "META_ACCESS_TOKEN is not configured: paid followers were not loaded from the ad account.",
-            "META_ACCESS_TOKEN не настроен: paid-подписчики не загружены из рекламного кабинета.",
-        )]
-    since, until = date.fromisoformat(period_start), date.fromisoformat(period_end)
-    if (until - since).days + 1 > MAX_SYNC_DAYS:
-        return False, [tr(
-            f"The period is longer than {MAX_SYNC_DAYS} days: paid followers were not loaded from the ad account.",
-            f"Период длиннее {MAX_SYNC_DAYS} дней: paid-подписчики не загружены из рекламного кабинета.",
-        )]
+def _active_ad_account_ids() -> list[str]:
     with connect_db() as conn:
-        ad_account_ids = [row[0] for row in conn.execute("SELECT account_id FROM fb_ad_accounts WHERE is_active=1").fetchall()]
-    if not ad_account_ids:
-        return False, [tr(
-            "No active Facebook ad accounts: add one on the Facebook Ads page to load paid followers.",
-            "Нет активных рекламных кабинетов: добавьте кабинет на странице Facebook Ads, чтобы загружать paid-подписчиков.",
-        )]
+        return [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT account_id FROM fb_ad_accounts WHERE is_active=1"
+            ).fetchall()
+        ]
 
-    for ad_account_id in ad_account_ids:
-        result = sync_ad_account(ad_account_id, since, until, triggered_by=username, enforce_cooldown=False)
-        if result.status != "ok":
+
+def _store_paid_from_synced_ads(
+    period_start: str,
+    period_end: str,
+    accounts: set[str],
+    username: str,
+    ad_account_ids: list[str],
+) -> tuple[bool, list[str]]:
+    """Materialize paid rows from already stored fb_* tables without an API call."""
+    with connect_db() as conn:
+        period_ads = _period_ads(conn, ad_account_ids, period_start, period_end)
+        if not period_ads:
             return False, [tr(
-                f"Ad account {ad_account_id} did not sync ({result.message}). Paid followers for this period were left unchanged.",
-                f"Кабинет {ad_account_id} не синхронизировался ({result.message}). Paid-подписчики за период не изменены.",
+                "No synchronized Ads data was found for this period. Existing paid followers were left unchanged.",
+                "За этот период не найдены синхронизированные данные Ads. Существующие paid-подписчики не изменены.",
             )]
 
-    with connect_db() as conn:
         meta_accounts_by_id: dict[str, set[str]] = {}
         for publication_id, account in conn.execute(
             "SELECT publication_id, account FROM meta_publications WHERE period_start=? AND period_end=?",
@@ -144,8 +132,7 @@ def save_paid_from_ads_api(
             for media_id, account in conn.execute("SELECT media_id, account FROM ig_media").fetchall()
         }
         paid_rows, unresolved = resolve_paid_rows(
-            _period_ads(conn, ad_account_ids, period_start, period_end),
-            meta_accounts_by_id, media_accounts, accounts,
+            period_ads, meta_accounts_by_id, media_accounts, accounts,
         )
 
         warnings: list[str] = []
@@ -191,6 +178,83 @@ def save_paid_from_ads_api(
     return True, warnings
 
 
+def save_paid_from_synced_data(
+    period_start: str, period_end: str, accounts: set[str], username: str
+) -> tuple[bool, list[str]]:
+    """Build paid rows from a completed sync without calling Meta again."""
+    if not accounts:
+        return False, []
+    ad_account_ids = _active_ad_account_ids()
+    if not ad_account_ids:
+        return False, [tr(
+            "No active Facebook ad accounts: add one on the Facebook Ads page to use synchronized data.",
+            "Нет активных рекламных кабинетов: добавьте кабинет на странице Facebook Ads, чтобы использовать синхронизированные данные.",
+        )]
+    with connect_db() as conn:
+        missing_syncs = [
+            account_id
+            for account_id in ad_account_ids
+            if conn.execute(
+                """
+                SELECT 1 FROM fb_sync_log
+                WHERE account_id=? AND status='ok'
+                  AND period_start<=? AND period_end>=?
+                ORDER BY finished_at DESC LIMIT 1
+                """,
+                (account_id, period_start, period_end),
+            ).fetchone() is None
+        ]
+    if missing_syncs:
+        return False, [tr(
+            "No successful sync covering this period was found for: " + ", ".join(missing_syncs) + ". Existing paid followers were left unchanged.",
+            "Не найдена успешная синхронизация за весь период для: " + ", ".join(missing_syncs) + ". Существующие paid-подписчики не изменены.",
+        )]
+    return _store_paid_from_synced_ads(
+        period_start, period_end, accounts, username, ad_account_ids,
+    )
+
+
+def save_paid_from_ads_api(
+    period_start: str, period_end: str, accounts: set[str], username: str
+) -> tuple[bool, list[str]]:
+    """Sync ad accounts for the period and replace its paid rows with API data.
+
+    Nothing is written unless every active ad account synced successfully, so a
+    failed request never wipes paid followers that were already saved.
+    """
+    if not accounts:
+        return False, []
+    if not is_configured():
+        return False, [tr(
+            "META_ACCESS_TOKEN is not configured: paid followers were not loaded from the ad account.",
+            "META_ACCESS_TOKEN не настроен: paid-подписчики не загружены из рекламного кабинета.",
+        )]
+    since, until = date.fromisoformat(period_start), date.fromisoformat(period_end)
+    if (until - since).days + 1 > MAX_SYNC_DAYS:
+        return False, [tr(
+            f"The period is longer than {MAX_SYNC_DAYS} days: paid followers were not loaded from the ad account.",
+            f"Период длиннее {MAX_SYNC_DAYS} дней: paid-подписчики не загружены из рекламного кабинета.",
+        )]
+    ad_account_ids = _active_ad_account_ids()
+    if not ad_account_ids:
+        return False, [tr(
+            "No active Facebook ad accounts: add one on the Facebook Ads page to load paid followers.",
+            "Нет активных рекламных кабинетов: добавьте кабинет на странице Facebook Ads, чтобы загружать paid-подписчиков.",
+        )]
+
+    for ad_account_id in ad_account_ids:
+        result = sync_ad_account(ad_account_id, since, until, triggered_by=username, enforce_cooldown=False)
+        if result.status != "ok":
+            return False, [tr(
+                f"Ad account {ad_account_id} did not sync ({result.message}). Paid followers for this period were left unchanged.",
+                f"Кабинет {ad_account_id} не синхронизировался ({result.message}). Paid-подписчики за период не изменены.",
+            )]
+
+    return _store_paid_from_synced_ads(
+        period_start, period_end, accounts, username, ad_account_ids,
+    )
+
+
 def refresh_paid_from_ads_api(period_start: str, period_end: str, user: dict) -> list[str]:
     """Reload paid followers for an already uploaded Meta period and recalculate it."""
     require_permission(user, "upload_meta")
@@ -206,3 +270,24 @@ def refresh_paid_from_ads_api(period_start: str, period_end: str, user: dict) ->
         for account in sorted(accounts):
             recalc_final(account, period_start, period_end)
     return warnings
+
+
+def refresh_paid_from_synced_data(
+    period_start: str, period_end: str, user: dict
+) -> tuple[bool, list[str]]:
+    """Finish matching and recalculation using an already successful Ads sync."""
+    require_permission(user, "upload_meta")
+    with connect_db() as conn:
+        accounts = {
+            str(row[0]) for row in conn.execute(
+                "SELECT DISTINCT account FROM meta_publications WHERE period_start=? AND period_end=?",
+                (period_start, period_end),
+            ).fetchall()
+        }
+    saved, messages = save_paid_from_synced_data(
+        period_start, period_end, accounts, user["username"],
+    )
+    if saved:
+        for account in sorted(accounts):
+            recalc_final(account, period_start, period_end)
+    return saved, messages
