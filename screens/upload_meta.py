@@ -7,7 +7,7 @@ from core.csv_import import import_meta, infer_accounts_from_meta, read_csv_any
 from core.db import db_df
 from core.i18n import tr
 from core.style import hero
-from integrations.ads_paid_followers import refresh_paid_from_ads_api
+from integrations.ads_paid_followers import refresh_paid_from_ads_api, refresh_paid_from_synced_data
 from integrations.facebook_ads_client import is_configured
 
 
@@ -29,8 +29,25 @@ def _render_paid_refresh(user: dict) -> None:
         ))
         options = [f"{row.period_start} – {row.period_end}" for row in periods.itertuples()]
         selected = st.selectbox(tr("Meta period", "Период Meta"), options, key="paid_refresh_period")
+        period_start, period_end = selected.split(" – ")
+        st.caption(tr(
+            "If the Facebook Ads sync already finished with status ok, build the report from those saved data without calling Meta again.",
+            "Если синхронизация Facebook Ads уже завершилась со статусом ok, соберите отчёт из сохранённых данных без нового обращения к Meta.",
+        ))
+        if st.button(
+            tr("Build report from synced Ads data", "Собрать отчёт из синхронизированных Ads-данных"),
+            type="primary",
+            use_container_width=True,
+        ):
+            with st.spinner(tr("Matching Ads data and recalculating...", "Сопоставляем Ads-данные и пересчитываем...")):
+                saved, messages = refresh_paid_from_synced_data(period_start, period_end, user)
+            if saved and messages:
+                st.success(messages[0])
+                _show_messages(messages[1:])
+            else:
+                _show_messages(messages)
+        st.divider()
         if st.button(tr("Reload paid from the ad account", "Обновить paid из рекламного кабинета"), use_container_width=True):
-            period_start, period_end = selected.split(" – ")
             with st.spinner(tr("Syncing the ad account...", "Синхронизация рекламного кабинета...")):
                 warnings = refresh_paid_from_ads_api(period_start, period_end, user)
             _show_messages(warnings)

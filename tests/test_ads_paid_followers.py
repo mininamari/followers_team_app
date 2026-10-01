@@ -103,6 +103,10 @@ class SavePaidFromAdsApiTests(unittest.TestCase):
                 CREATE TABLE fb_creatives (ad_id TEXT, instagram_user_id TEXT, effective_instagram_media_id TEXT);
                 CREATE TABLE fb_instagram_accounts (account_id TEXT, instagram_user_id TEXT, username TEXT);
                 CREATE TABLE fb_insights (ad_id TEXT, date_start TEXT, date_stop TEXT, spend REAL, instagram_followers REAL);
+                CREATE TABLE fb_sync_log (
+                    account_id TEXT, started_at TEXT, finished_at TEXT, status TEXT,
+                    period_start TEXT, period_end TEXT
+                );
                 CREATE TABLE ig_media (media_id TEXT, account TEXT);
                 INSERT INTO fb_ad_accounts VALUES('act_1', 1);
                 INSERT INTO fb_campaigns VALUES('c1', 'act_1', 'campaign');
@@ -110,6 +114,10 @@ class SavePaidFromAdsApiTests(unittest.TestCase):
                 INSERT INTO fb_insights VALUES('a1', '2026-07-02', '2026-07-02', 20, 4);
                 INSERT INTO fb_insights VALUES('a1', '2026-07-03', '2026-07-03', 30, 5);
                 INSERT INTO fb_insights VALUES('a1', '2026-08-01', '2026-08-01', 99, 99);
+                INSERT INTO fb_sync_log VALUES(
+                    'act_1', '2026-08-01T00:00:00Z', '2026-08-01T00:01:00Z', 'ok',
+                    '2026-07-01', '2026-07-31'
+                );
                 INSERT INTO meta_publications VALUES('novakiditalia', '2026-07-01', '2026-07-31', '111');
                 INSERT INTO pr_ads VALUES('novakiditalia', '2026-07-01', '2026-07-31', '2026-07', 'old', 7, 1, 'pr.csv', 'u', 't');
                 """
@@ -150,6 +158,48 @@ class SavePaidFromAdsApiTests(unittest.TestCase):
         self.assertFalse(saved)
         self.assertIn("boom", warnings[0])
         self.assertEqual(self.pr_rows(), [("novakiditalia", "old", 7, 1.0, "pr.csv")])
+
+    @patch.object(paid, "sync_ad_account")
+    def test_uses_completed_sync_without_calling_meta_again(self, sync) -> None:
+        saved, messages = paid.save_paid_from_synced_data(
+            *PERIOD, {"novakiditalia"}, "maria"
+        )
+
+        self.assertTrue(saved)
+        sync.assert_not_called()
+        self.assertEqual(self.pr_rows(), [("novakiditalia", "111", 9, 50.0, paid.API_SOURCE_NAME)])
+        self.assertIn("9", messages[0])
+        with self.connect() as conn:
+            upload = conn.execute(
+                "SELECT filename, rows_saved FROM uploads ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(tuple(upload), (paid.API_SOURCE_NAME, 1))
+
+    def test_cached_finalize_requires_successful_sync_for_the_period(self) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM fb_sync_log")
+            conn.commit()
+
+        saved, messages = paid.save_paid_from_synced_data(
+            *PERIOD, {"novakiditalia"}, "maria"
+        )
+
+        self.assertFalse(saved)
+        self.assertIn("act_1", messages[0])
+        self.assertEqual(self.pr_rows(), [("novakiditalia", "old", 7, 1.0, "pr.csv")])
+
+    @patch.object(paid, "require_permission")
+    @patch.object(paid, "recalc_final")
+    @patch.object(paid, "save_paid_from_synced_data", return_value=(True, ["saved"]))
+    def test_cached_refresh_recalculates_reports(self, save_cached, recalc, _permission) -> None:
+        saved, messages = paid.refresh_paid_from_synced_data(
+            *PERIOD, {"username": "maria"}
+        )
+
+        self.assertTrue(saved)
+        self.assertEqual(messages, ["saved"])
+        save_cached.assert_called_once_with(*PERIOD, {"novakiditalia"}, "maria")
+        recalc.assert_called_once_with("novakiditalia", *PERIOD)
 
 
 if __name__ == "__main__":
